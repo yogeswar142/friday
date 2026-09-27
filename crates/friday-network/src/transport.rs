@@ -39,7 +39,7 @@ impl NetworkTransport {
     }
 
     pub async fn recv_packet(&self) -> Result<(NetworkPacket, SocketAddr)> {
-        let mut buf = [0u8; 4096];
+        let mut buf = [0u8; 65536];
         let (len, src_addr) = self
             .socket
             .recv_from(&mut buf)
@@ -48,6 +48,19 @@ impl NetworkTransport {
 
         let packet = NetworkPacket::decode(&buf[..len])?;
         Ok((packet, src_addr))
+    }
+
+    /// Send raw bytes directly to a target address (for pre-encoded packets)
+    pub async fn send_raw_to(&self, bytes: &[u8], target_addr: SocketAddr) -> Result<()> {
+        self.socket
+            .send_to(bytes, target_addr)
+            .await
+            .map_err(|e| CoreError::RouterError(format!("UDP raw send failed: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn next_seq(&self) -> u32 {
+        self.sequence.fetch_add(1, Ordering::SeqCst)
     }
 }
 

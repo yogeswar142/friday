@@ -1,0 +1,36 @@
+[package]
+name = "friday-agent"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "friday-agent"
+path = "src/main.rs"
+
+[dependencies]
+friday-core = { path = "../friday-core" }
+friday-network = { path = "../friday-network" }
+tokio.workspace = true
+serde.workspace = true
+bincode.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap.workspace = true
+async-trait.workspace = true
+
+# Linux-only: X11 input capture and injection via XTest
+[target.'cfg(target_os = "linux")'.dependencies]
+x11 = { version = "2.21", features = ["xlib", "xtest"] }
+x11rb = { version = "0.13", features = ["allow-unsafe-code", "xinput"] }
+
+# Windows-only: Win32 SendInput + RawInput
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_Foundation",
+    "Win32_System_Threading",
+] }

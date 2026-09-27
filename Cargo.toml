@@ -4,6 +4,7 @@ members = [
     "crates/friday-platform",
     "crates/friday-network",
     "crates/friday-cli",
+    "crates/friday-agent",
 ]
 resolver = "2"
 

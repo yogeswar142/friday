@@ -34,6 +34,8 @@ impl Default for PacketHeader {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum PacketPayload {
     Input(InputEvent),
+    /// Raw binary control message (ControlMessage from friday-agent)
+    Control(Vec<u8>),
     ControlHandshake {
         device_id: String,
         device_name: String,
@@ -84,6 +86,18 @@ impl NetworkPacket {
                 sequence,
             },
             payload: PacketPayload::Input(event),
+        }
+    }
+
+    pub fn new_control(payload_bytes: Vec<u8>) -> Self {
+        Self {
+            header: PacketHeader {
+                magic: *MAGIC_BYTES,
+                version: PROTOCOL_VERSION,
+                channel: ChannelType::Control,
+                sequence: 0,
+            },
+            payload: PacketPayload::Control(payload_bytes),
         }
     }
 
