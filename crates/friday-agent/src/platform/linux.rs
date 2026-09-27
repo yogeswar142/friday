@@ -215,133 +215,268 @@ pub fn inject_event(event: &InputEvent) -> AgentResult<()> {
 ///   - Button events by tracking mask changes
 ///
 /// Returns when `stop` is set to true.
-pub async fn capture_loop(
+pub fn capture_loop(
     tx: mpsc::Sender<InputEvent>,
     stop: Arc<AtomicBool>,
+    is_remote_active: Arc<AtomicBool>,
     edge_threshold_px: i32,
     screen_width: i32,
     screen_height: i32,
     edge_trigger_tx: mpsc::Sender<EdgeTrigger>,
 ) {
-    let mut last_x = 0i32;
-    let mut last_y = 0i32;
-    let mut last_mask = 0u32;
-    let mut first = true;
-
-    // Initialize position
-    if let Ok((x, y)) = get_cursor_position() {
-        last_x = x;
-        last_y = y;
+    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
+    if display.is_null() {
+        tracing::error!("capture_loop: failed to open X display");
+        return;
     }
+
+    let screen = unsafe { x11::xlib::XDefaultScreen(display) };
+    let root = unsafe { x11::xlib::XRootWindow(display, screen) };
+
+    let center_x = screen_width / 2;
+    let center_y = screen_height / 2;
+
+    let mut last_g50_x = center_x;
+    let mut last_g50_y = center_y;
+    let mut was_remote = false;
+
+    // Track remote (Yoga) virtual cursor position
+    let remote_w = 1280.0f32;
+    let remote_h = 800.0f32;
+    let mut yoga_x = remote_w / 2.0;
+    let mut yoga_y = remote_h / 2.0;
 
     let poll_interval = Duration::from_millis(2); // 500 Hz
 
     while !stop.load(Ordering::Relaxed) {
         let loop_start = Instant::now();
-
-        // SAFETY: open/close display per iteration is safe; XQueryPointer state returned by value
-        let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-        if display.is_null() {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            continue;
-        }
-
-        let screen = unsafe { x11::xlib::XDefaultScreen(display) };
-        let root = unsafe { x11::xlib::XRootWindow(display, screen) };
-
-        let mut root_ret = 0u64;
-        let mut child_ret = 0u64;
-        let mut root_x = 0i32;
-        let mut root_y = 0i32;
-        let mut win_x = 0i32;
-        let mut win_y = 0i32;
-        let mut mask = 0u32;
-
-        unsafe {
-            x11::xlib::XQueryPointer(
-                display,
-                root,
-                &mut root_ret,
-                &mut child_ret,
-                &mut root_x,
-                &mut root_y,
-                &mut win_x,
-                &mut win_y,
-                &mut mask,
-            );
-            x11::xlib::XCloseDisplay(display);
-        }
-
+        let remote_active = is_remote_active.load(Ordering::Relaxed);
         let ts = timestamp_ms();
 
-        if first {
-            last_x = root_x;
-            last_y = root_y;
-            last_mask = mask;
-            first = false;
-        } else {
-            // Movement delta
-            let dx = root_x - last_x;
-            let dy = root_y - last_y;
-            if dx != 0 || dy != 0 {
-                // Check edge trigger BEFORE sending movement
-                let trigger = detect_edge(root_x, root_y, screen_width, screen_height, edge_threshold_px);
-                if let Some(edge) = trigger {
-                    // Send edge trigger signal
-                    let _ = edge_trigger_tx.try_send(EdgeTrigger {
-                        edge,
-                        norm_x: root_x as f32 / screen_width as f32,
-                        norm_y: root_y as f32 / screen_height as f32,
-                    });
-                    // Clamp cursor back from edge to prevent OS edge effects
-                } else {
-                    // Normal movement — send relative event
-                    let evt = InputEvent::Mouse(MouseEvent::MoveRel {
-                        dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                        dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                        timestamp: ts,
-                    });
-                    let _ = tx.try_send(evt);
-                }
-
-                last_x = root_x;
-                last_y = root_y;
+        // ── State Transition: Local -> Remote ────────────────────────────────
+        if remote_active && !was_remote {
+            unsafe {
+                // Hide cursor on G50 while controlling Yoga
+                x11::xfixes::XFixesHideCursor(display, root);
+                // Grab pointer so no clicks/scroll leak to G50 windows
+                x11::xlib::XGrabPointer(
+                    display,
+                    root,
+                    0,
+                    (x11::xlib::PointerMotionMask
+                        | x11::xlib::ButtonPressMask
+                        | x11::xlib::ButtonReleaseMask) as u32,
+                    x11::xlib::GrabModeAsync,
+                    x11::xlib::GrabModeAsync,
+                    0,
+                    0,
+                    x11::xlib::CurrentTime,
+                );
+                // Warp pointer to center to allow infinite relative travel
+                x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, center_x, center_y);
+                x11::xlib::XFlush(display);
             }
-
-            // Detect button state changes via bitmask comparison
-            // X11 button masks: Button1=256, Button2=512, Button3=1024, Button4=2048(scroll), Button5=4096(scroll)
-            for (xbtn, friday_btn) in [
-                (1u32 << 8, MouseButton::Left),
-                (1u32 << 9, MouseButton::Middle),
-                (1u32 << 10, MouseButton::Right),
-            ] {
-                let was_pressed = (last_mask & xbtn) != 0;
-                let is_pressed = (mask & xbtn) != 0;
-                if was_pressed != is_pressed {
-                    let state = if is_pressed {
-                        ElementState::Pressed
-                    } else {
-                        ElementState::Released
-                    };
-                    let evt = InputEvent::Mouse(MouseEvent::Button {
-                        button: friday_btn,
-                        state,
-                        timestamp: ts,
-                    });
-                    let _ = tx.try_send(evt);
-                }
+            was_remote = true;
+            tracing::info!(">>> Active on Yoga: G50 cursor hidden, pointer grabbed");
+        }
+        // ── State Transition: Remote -> Local ────────────────────────────────
+        else if !remote_active && was_remote {
+            unsafe {
+                // Ungrab pointer and restore G50 cursor
+                x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+                x11::xfixes::XFixesShowCursor(display, root);
+                // Restore G50 cursor to where it left
+                x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, last_g50_x, last_g50_y);
+                x11::xlib::XFlush(display);
             }
-
-            last_mask = mask;
+            was_remote = false;
+            tracing::info!("<<< Active on G50: cursor restored at ({}, {})", last_g50_x, last_g50_y);
         }
 
-        // Maintain target poll frequency
+        // ── Processing while REMOTE ACTIVE ───────────────────────────────────
+        if remote_active {
+            // Drain X events for clicks, scroll, and motion while grabbed
+            unsafe {
+                while x11::xlib::XPending(display) > 0 {
+                    let mut event: x11::xlib::XEvent = std::mem::zeroed();
+                    x11::xlib::XNextEvent(display, &mut event);
+
+                    match event.get_type() {
+                        x11::xlib::ButtonPress => {
+                            let btn_event = event.button;
+                            let btn_num = btn_event.button;
+
+                            // Buttons 4 & 5 are vertical scroll, 6 & 7 horizontal scroll
+                            if btn_num == 4 {
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Scroll {
+                                    dx: 0,
+                                    dy: -1, // scroll up
+                                    timestamp: ts,
+                                }));
+                            } else if btn_num == 5 {
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Scroll {
+                                    dx: 0,
+                                    dy: 1, // scroll down
+                                    timestamp: ts,
+                                }));
+                            } else if btn_num == 6 {
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Scroll {
+                                    dx: -1,
+                                    dy: 0,
+                                    timestamp: ts,
+                                }));
+                            } else if btn_num == 7 {
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Scroll {
+                                    dx: 1,
+                                    dy: 0,
+                                    timestamp: ts,
+                                }));
+                            } else {
+                                let friday_btn = match btn_num {
+                                    1 => MouseButton::Left,
+                                    2 => MouseButton::Middle,
+                                    3 => MouseButton::Right,
+                                    other => MouseButton::Other(other as u8),
+                                };
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Button {
+                                    button: friday_btn,
+                                    state: ElementState::Pressed,
+                                    timestamp: ts,
+                                }));
+                            }
+                        }
+
+                        x11::xlib::ButtonRelease => {
+                            let btn_event = event.button;
+                            let btn_num = btn_event.button;
+                            if btn_num <= 3 || btn_num > 7 {
+                                let friday_btn = match btn_num {
+                                    1 => MouseButton::Left,
+                                    2 => MouseButton::Middle,
+                                    3 => MouseButton::Right,
+                                    other => MouseButton::Other(other as u8),
+                                };
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Button {
+                                    button: friday_btn,
+                                    state: ElementState::Released,
+                                    timestamp: ts,
+                                }));
+                            }
+                        }
+
+                        x11::xlib::MotionNotify => {
+                            let motion = event.motion;
+                            let dx = motion.x_root - center_x;
+                            let dy = motion.y_root - center_y;
+
+                            if dx != 0 || dy != 0 {
+                                // Update virtual Yoga position
+                                yoga_x += dx as f32;
+                                yoga_y += dy as f32;
+
+                                // Send relative movement to Yoga
+                                let _ = tx.try_send(InputEvent::Mouse(MouseEvent::MoveRel {
+                                    dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                    dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                    timestamp: ts,
+                                }));
+
+                                // Check if Yoga virtual cursor reached ANY edge -> return to G50!
+                                if yoga_x <= 0.0 || yoga_x >= remote_w - 1.0 || yoga_y <= 0.0 || yoga_y >= remote_h - 1.0 {
+                                    tracing::info!("Yoga edge reached at ({:.0}, {:.0}) -> Wrapping back to G50!", yoga_x, yoga_y);
+                                    yoga_x = yoga_x.clamp(5.0, remote_w - 6.0);
+                                    yoga_y = yoga_y.clamp(5.0, remote_h - 6.0);
+                                    is_remote_active.store(false, Ordering::SeqCst);
+                                }
+
+                                // Warp pointer back to center to prepare for next delta
+                                x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, center_x, center_y);
+                                x11::xlib::XFlush(display);
+                            }
+                        }
+
+                        _ => {}
+                    }
+                }
+            }
+        }
+        // ── Processing while LOCAL ACTIVE ────────────────────────────────────
+        else {
+            let mut root_ret = 0u64;
+            let mut child_ret = 0u64;
+            let mut root_x = 0i32;
+            let mut root_y = 0i32;
+            let mut win_x = 0i32;
+            let mut win_y = 0i32;
+            let mut mask = 0u32;
+
+            unsafe {
+                x11::xlib::XQueryPointer(
+                    display,
+                    root,
+                    &mut root_ret,
+                    &mut child_ret,
+                    &mut root_x,
+                    &mut root_y,
+                    &mut win_x,
+                    &mut win_y,
+                    &mut mask,
+                );
+            }
+
+            // Check if cursor reached any edge of G50 screen
+            if let Some(edge) = detect_edge(root_x, root_y, screen_width, screen_height, edge_threshold_px) {
+                last_g50_x = root_x.clamp(10, screen_width - 11);
+                last_g50_y = root_y.clamp(10, screen_height - 11);
+
+                // Set Yoga entry position based on edge of exit
+                match edge {
+                    ScreenEdge::Right => {
+                        yoga_x = 5.0;
+                        yoga_y = (root_y as f32 / screen_height as f32) * remote_h;
+                    }
+                    ScreenEdge::Left => {
+                        yoga_x = remote_w - 6.0;
+                        yoga_y = (root_y as f32 / screen_height as f32) * remote_h;
+                    }
+                    ScreenEdge::Top => {
+                        yoga_x = (root_x as f32 / screen_width as f32) * remote_w;
+                        yoga_y = remote_h - 6.0;
+                    }
+                    ScreenEdge::Bottom => {
+                        yoga_x = (root_x as f32 / screen_width as f32) * remote_w;
+                        yoga_y = 5.0;
+                    }
+                }
+
+                let _ = edge_trigger_tx.try_send(EdgeTrigger {
+                    edge,
+                    norm_x: root_x as f32 / screen_width as f32,
+                    norm_y: root_y as f32 / screen_height as f32,
+                });
+
+                tracing::info!("G50 edge {:?} reached at ({}, {}) -> Transferring to Yoga at ({:.0}, {:.0})!", edge, root_x, root_y, yoga_x, yoga_y);
+                is_remote_active.store(true, Ordering::SeqCst);
+            }
+        }
+
         let elapsed = loop_start.elapsed();
         if elapsed < poll_interval {
-            tokio::time::sleep(poll_interval - elapsed).await;
+            std::thread::sleep(poll_interval - elapsed);
         }
     }
+
+    // Clean exit: restore cursor and ungrab
+    unsafe {
+        if was_remote {
+            x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+            x11::xfixes::XFixesShowCursor(display, root);
+            x11::xlib::XFlush(display);
+        }
+        x11::xlib::XCloseDisplay(display);
+    }
 }
+
 
 fn detect_edge(
     x: i32,

@@ -17,7 +17,10 @@
 
 use std::{
     net::SocketAddr,
-    sync::{atomic::AtomicU32, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicU32, Ordering},
+        Arc,
+    },
 };
 
 use clap::{Parser, Subcommand};
@@ -56,6 +59,9 @@ enum Commands {
         /// Local bind address
         #[arg(short, long, default_value = "0.0.0.0:48701")]
         bind: String,
+        /// Immediately start controlling remote cursor without waiting for edge
+        #[arg(short, long, default_value_t = false)]
+        direct: bool,
     },
     /// Full session mode: connect two instances, handle circular edge transfer
     Connect {
@@ -87,7 +93,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Info => run_info().await,
         Commands::Receive { bind } => run_receiver(&bind).await,
-        Commands::Send { peer, bind } => run_sender(&bind, &peer).await,
+        Commands::Send { peer, bind, direct } => run_sender(&bind, &peer, direct).await,
         Commands::Connect { peer, bind, edge_px } => {
             run_connect(&bind, &peer, edge_px).await
         }
@@ -171,7 +177,7 @@ async fn run_receiver(bind_addr: &str) -> Result<(), Box<dyn std::error::Error>>
 
 // ── Sender ────────────────────────────────────────────────────────────────────
 
-async fn run_sender(bind_addr: &str, peer_addr: &str) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_sender(bind_addr: &str, peer_addr: &str, direct: bool) -> Result<(), Box<dyn std::error::Error>> {
     info!("FRIDAY Agent — SENDER mode");
     info!("Binding on: {}", bind_addr);
     info!("Peer: {}", peer_addr);
@@ -183,6 +189,8 @@ async fn run_sender(bind_addr: &str, peer_addr: &str) -> Result<(), Box<dyn std:
     let session = SessionHandle::new(screen_w, screen_h);
     session.set_peer(peer).await;
     session.set_mode(SessionMode::Sender).await;
+
+    let is_remote_active = Arc::new(AtomicBool::new(direct));
 
     // Input event channel: capture → sender_loop
     let (input_tx, input_rx) = mpsc::channel::<friday_core::InputEvent>(256);
@@ -200,20 +208,21 @@ async fn run_sender(bind_addr: &str, peer_addr: &str) -> Result<(), Box<dyn std:
         sender_loop(input_rx, tx_clone, session_clone, seq_clone).await;
     });
 
-    // Start Linux capture loop
+    // Start Linux capture loop in dedicated OS thread for ultra-low latency
     #[cfg(target_os = "linux")]
     {
         let stop = session.stop.clone();
-        tokio::spawn(async move {
+        let remote_active_clone = is_remote_active.clone();
+        std::thread::spawn(move || {
             friday_agent::platform::linux::capture_loop(
                 input_tx,
                 stop,
-                3, // edge threshold pixels
+                remote_active_clone,
+                4, // edge threshold pixels
                 screen_w,
                 screen_h,
                 edge_tx,
-            )
-            .await;
+            );
         });
     }
 
@@ -233,46 +242,33 @@ async fn run_sender(bind_addr: &str, peer_addr: &str) -> Result<(), Box<dyn std:
     transport.send_raw_to(&encoded, peer).await.map_err(|e| e.to_string())?;
     info!("Sent Hello to {}", peer);
 
-    // Edge handoff handler
-    let transport_edge = transport.clone();
-    let session_edge = session.clone();
+    // Edge handoff handler: when edge hit, activate remote control
+    let is_remote_active_edge = is_remote_active.clone();
     tokio::spawn(async move {
         while let Some(trigger) = edge_rx.recv().await {
-            if session_edge.get_mode().await == SessionMode::Sender {
-                info!(
-                    "Edge crossing detected: {:?} at ({:.2}, {:.2})",
-                    trigger.edge, trigger.norm_x, trigger.norm_y
-                );
-                // Send HandoffControl to peer
-                let msg = ControlMessage::HandoffControl {
-                    entry_x_norm: 1.0 - trigger.norm_x,
-                    entry_y_norm: trigger.norm_y,
-                };
-                if let Ok(bytes) = msg.encode() {
-                    let packet = NetworkPacket::new_control(bytes);
-                    if let Ok(enc) = packet.encode() {
-                        if let Some(p) = session_edge.get_peer().await {
-                            let _ = transport_edge.send_raw_to(&enc, p).await;
-                        }
-                    }
-                }
-                // Switch to receiver — peer now sends to us
-                session_edge.set_mode(SessionMode::Receiver).await;
-                info!("Handed off control to peer. Now in Receiver mode.");
-            }
+            info!(
+                "Screen edge {:?} reached at ({:.2}, {:.2})! Transferring mouse to Yoga!",
+                trigger.edge, trigger.norm_x, trigger.norm_y
+            );
+            is_remote_active_edge.store(true, Ordering::SeqCst);
         }
     });
 
-    // Also start receiver loop so incoming events from peer get injected
+    // Also start receiver loop to process pong / peer messages
     let transport_recv = transport.clone();
     let session_recv = session.clone();
     tokio::spawn(async move {
         receiver_loop(transport_recv, session_recv).await;
     });
 
-    println!("✓ FRIDAY Sender started. Move mouse to screen edge to hand off to peer.");
+    if direct {
+        println!("🚀 DIRECT CONTROL ACTIVE: Moving your mouse on G50 moves the cursor on Yoga!");
+    } else {
+        println!("✓ FRIDAY Sender started.");
+        println!("  Move mouse to any screen edge to transfer control to Yoga.");
+    }
     println!("  Peer: {}", peer_addr);
-    println!("  Press Ctrl+C to stop.");
+    println!("  Press Ctrl+C to stop safely.");
 
     tokio::signal::ctrl_c().await?;
     session.request_stop();
@@ -328,20 +324,23 @@ async fn run_connect(
         sender_loop(input_rx, tx_cl, sess_cl, seq_cl).await;
     });
 
-    // ── Linux capture loop ──
+    let is_remote_active = Arc::new(AtomicBool::new(false));
+
+    // ── Linux capture loop in dedicated OS thread ──
     #[cfg(target_os = "linux")]
     {
         let stop = session.stop.clone();
-        tokio::spawn(async move {
+        let remote_active_clone = is_remote_active.clone();
+        std::thread::spawn(move || {
             friday_agent::platform::linux::capture_loop(
                 input_tx,
                 stop,
+                remote_active_clone,
                 edge_px,
                 screen_w,
                 screen_h,
                 edge_tx,
-            )
-            .await;
+            );
         });
     }
 
