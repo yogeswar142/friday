@@ -15,7 +15,7 @@
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -51,6 +51,8 @@ pub struct SessionHandle {
     pub peer_addr: Arc<tokio::sync::Mutex<Option<SocketAddr>>>,
     pub local_screen_w: i32,
     pub local_screen_h: i32,
+    pub remote_screen_w: Arc<AtomicU32>,
+    pub remote_screen_h: Arc<AtomicU32>,
 }
 
 impl SessionHandle {
@@ -61,6 +63,8 @@ impl SessionHandle {
             peer_addr: Arc::new(tokio::sync::Mutex::new(None)),
             local_screen_w: screen_w,
             local_screen_h: screen_h,
+            remote_screen_w: Arc::new(AtomicU32::new(1920)),
+            remote_screen_h: Arc::new(AtomicU32::new(1080)),
         }
     }
 
@@ -275,6 +279,9 @@ async fn handle_control_message(
     match msg {
         ControlMessage::Hello { device_name, screen } => {
             info!("Hello from {} ({}x{})", device_name, screen.width, screen.height);
+            session.remote_screen_w.store(screen.width, Ordering::SeqCst);
+            session.remote_screen_h.store(screen.height, Ordering::SeqCst);
+            crate::logger::session_log(&format!("Connected with peer {} (remote screen: {}x{})", device_name, screen.width, screen.height));
             session.set_peer(src).await;
             // Reply with Welcome
             let welcome = ControlMessage::Welcome {
@@ -293,6 +300,9 @@ async fn handle_control_message(
 
         ControlMessage::Welcome { device_name, screen } => {
             info!("Welcome from {} ({}x{})", device_name, screen.width, screen.height);
+            session.remote_screen_w.store(screen.width, Ordering::SeqCst);
+            session.remote_screen_h.store(screen.height, Ordering::SeqCst);
+            crate::logger::session_log(&format!("Peer {} acknowledged Welcome. Remote screen configured to {}x{}", device_name, screen.width, screen.height));
             // The peer accepted — we stay in Sender mode
             session.set_mode(SessionMode::Sender).await;
             info!("Session established. We are in Sender mode.");

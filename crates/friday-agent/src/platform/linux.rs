@@ -12,7 +12,7 @@
 ///   XTestFakeRelativeMotionEvent for relative move injection
 
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU32, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -22,6 +22,7 @@ use friday_core::{DisplayBounds, ElementState, InputEvent, MouseButton, MouseEve
 
 use crate::control::{EdgeTrigger, ScreenEdge};
 use crate::error::{AgentError, Result as AgentResult};
+use crate::logger::session_log;
 
 fn timestamp_ms() -> u32 {
     SystemTime::now()
@@ -223,6 +224,8 @@ pub fn capture_loop(
     screen_width: i32,
     screen_height: i32,
     edge_trigger_tx: mpsc::Sender<EdgeTrigger>,
+    remote_screen_w: Arc<AtomicU32>,
+    remote_screen_h: Arc<AtomicU32>,
 ) {
     let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
     if display.is_null() {
@@ -241,19 +244,31 @@ pub fn capture_loop(
     let mut was_remote = false;
 
     // Track remote (Yoga) virtual cursor position
-    let remote_w = 1280.0f32;
-    let remote_h = 800.0f32;
-    let mut yoga_x = remote_w / 2.0;
-    let mut yoga_y = remote_h / 2.0;
+    let initial_rw = remote_screen_w.load(Ordering::Relaxed) as f32;
+    let initial_rh = remote_screen_h.load(Ordering::Relaxed) as f32;
+    let mut yoga_x = initial_rw / 2.0;
+    let mut yoga_y = initial_rh / 2.0;
+
+    let dwell_required = Duration::from_millis(1000); // 1.0 second dwell time
+    let mut g50_edge_dwell: Option<(Instant, ScreenEdge, Instant)> = None;
+    let mut yoga_edge_dwell: Option<(Instant, ScreenEdge, Instant)> = None;
 
     let poll_interval = Duration::from_millis(2); // 500 Hz
+    let threshold = edge_threshold_px.max(3);
+
+    session_log(&format!(
+        "Capture loop started: G50 screen={}x{}, remote screen={}x{}, dwell_time=1000ms, threshold={}px",
+        screen_width, screen_height, initial_rw, initial_rh, threshold
+    ));
 
     while !stop.load(Ordering::Relaxed) {
         let loop_start = Instant::now();
         let remote_active = is_remote_active.load(Ordering::Relaxed);
         let ts = timestamp_ms();
+        let cur_rw = remote_screen_w.load(Ordering::Relaxed) as f32;
+        let cur_rh = remote_screen_h.load(Ordering::Relaxed) as f32;
 
-        // ── State Transition: Local -> Remote ────────────────────────────────
+        // ── State Transition: Local (G50) -> Remote (Yoga) ───────────────────
         if remote_active && !was_remote {
             unsafe {
                 // Hide cursor on G50 while controlling Yoga
@@ -277,23 +292,42 @@ pub fn capture_loop(
                 x11::xlib::XFlush(display);
             }
             was_remote = true;
-            tracing::info!(">>> Active on Yoga: G50 cursor hidden, pointer grabbed");
+            yoga_edge_dwell = None;
+
+            // Place Yoga cursor at remembered last_yoga position
+            let norm_x = ((yoga_x / cur_rw).clamp(0.0, 1.0) * 65535.0).round() as u16;
+            let norm_y = ((yoga_y / cur_rh).clamp(0.0, 1.0) * 65535.0).round() as u16;
+            let _ = tx.try_send(InputEvent::Mouse(MouseEvent::MoveAbs {
+                x_norm: norm_x,
+                y_norm: norm_y,
+                timestamp: ts,
+            }));
+
+            session_log(&format!(
+                ">>> OWNERSHIP TRANSFER -> Yoga. G50 cursor hidden & frozen at ({}, {}). Yoga cursor placed at ({:.0}, {:.0}) [{:.1}%, {:.1}%].",
+                last_g50_x, last_g50_y, yoga_x, yoga_y, (yoga_x / cur_rw) * 100.0, (yoga_y / cur_rh) * 100.0
+            ));
         }
-        // ── State Transition: Remote -> Local ────────────────────────────────
+        // ── State Transition: Remote (Yoga) -> Local (G50) ───────────────────
         else if !remote_active && was_remote {
             unsafe {
                 // Ungrab pointer and restore G50 cursor
                 x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
                 x11::xfixes::XFixesShowCursor(display, root);
-                // Restore G50 cursor to where it left
+                // Restore G50 cursor to exact position where it was left
                 x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, last_g50_x, last_g50_y);
                 x11::xlib::XFlush(display);
             }
             was_remote = false;
-            tracing::info!("<<< Active on G50: cursor restored at ({}, {})", last_g50_x, last_g50_y);
+            g50_edge_dwell = None;
+
+            session_log(&format!(
+                "<<< OWNERSHIP TRANSFER -> G50. Cursor restored at ({}, {}). Yoga frozen at ({:.0}, {:.0}).",
+                last_g50_x, last_g50_y, yoga_x, yoga_y
+            ));
         }
 
-        // ── Processing while REMOTE ACTIVE ───────────────────────────────────
+        // ── Processing while REMOTE ACTIVE (controlling Yoga) ────────────────
         if remote_active {
             // Drain X events for clicks, scroll, and motion while grabbed
             unsafe {
@@ -303,20 +337,19 @@ pub fn capture_loop(
 
                     match event.get_type() {
                         x11::xlib::ButtonPress => {
-                            let btn_event = event.button;
-                            let btn_num = btn_event.button;
-
-                            // Buttons 4 & 5 are vertical scroll, 6 & 7 horizontal scroll
+                            let btn_num = event.button.button;
                             if btn_num == 4 {
+                                session_log("Yoga: Scroll UP");
                                 let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Scroll {
                                     dx: 0,
-                                    dy: -1, // scroll up
+                                    dy: -1,
                                     timestamp: ts,
                                 }));
                             } else if btn_num == 5 {
+                                session_log("Yoga: Scroll DOWN");
                                 let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Scroll {
                                     dx: 0,
-                                    dy: 1, // scroll down
+                                    dy: 1,
                                     timestamp: ts,
                                 }));
                             } else if btn_num == 6 {
@@ -338,6 +371,7 @@ pub fn capture_loop(
                                     3 => MouseButton::Right,
                                     other => MouseButton::Other(other as u8),
                                 };
+                                session_log(&format!("Yoga: Press {:?}", friday_btn));
                                 let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Button {
                                     button: friday_btn,
                                     state: ElementState::Pressed,
@@ -347,8 +381,7 @@ pub fn capture_loop(
                         }
 
                         x11::xlib::ButtonRelease => {
-                            let btn_event = event.button;
-                            let btn_num = btn_event.button;
+                            let btn_num = event.button.button;
                             if btn_num <= 3 || btn_num > 7 {
                                 let friday_btn = match btn_num {
                                     1 => MouseButton::Left,
@@ -356,6 +389,7 @@ pub fn capture_loop(
                                     3 => MouseButton::Right,
                                     other => MouseButton::Other(other as u8),
                                 };
+                                session_log(&format!("Yoga: Release {:?}", friday_btn));
                                 let _ = tx.try_send(InputEvent::Mouse(MouseEvent::Button {
                                     button: friday_btn,
                                     state: ElementState::Released,
@@ -370,24 +404,14 @@ pub fn capture_loop(
                             let dy = motion.y_root - center_y;
 
                             if dx != 0 || dy != 0 {
-                                // Update virtual Yoga position
-                                yoga_x += dx as f32;
-                                yoga_y += dy as f32;
+                                yoga_x = (yoga_x + dx as f32).clamp(0.0, cur_rw - 1.0);
+                                yoga_y = (yoga_y + dy as f32).clamp(0.0, cur_rh - 1.0);
 
-                                // Send relative movement to Yoga
                                 let _ = tx.try_send(InputEvent::Mouse(MouseEvent::MoveRel {
                                     dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                                     dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
                                     timestamp: ts,
                                 }));
-
-                                // Check if Yoga virtual cursor reached ANY edge -> return to G50!
-                                if yoga_x <= 0.0 || yoga_x >= remote_w - 1.0 || yoga_y <= 0.0 || yoga_y >= remote_h - 1.0 {
-                                    tracing::info!("Yoga edge reached at ({:.0}, {:.0}) -> Wrapping back to G50!", yoga_x, yoga_y);
-                                    yoga_x = yoga_x.clamp(5.0, remote_w - 6.0);
-                                    yoga_y = yoga_y.clamp(5.0, remote_h - 6.0);
-                                    is_remote_active.store(false, Ordering::SeqCst);
-                                }
 
                                 // Warp pointer back to center to prepare for next delta
                                 x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, center_x, center_y);
@@ -399,8 +423,70 @@ pub fn capture_loop(
                     }
                 }
             }
+
+            // Check Yoga edge dwell (1.0s)
+            let yoga_edge = detect_yoga_edge(yoga_x, yoga_y, cur_rw, cur_rh, 3.0);
+            match yoga_edge {
+                Some(edge) => {
+                    let now = Instant::now();
+                    match yoga_edge_dwell {
+                        Some((start_time, prev_edge, last_prog)) => {
+                            if prev_edge == edge {
+                                let elapsed = start_time.elapsed();
+                                if now.duration_since(last_prog) >= Duration::from_millis(250) {
+                                    session_log(&format!(
+                                        "[DWELL PROGRESS] Yoga cursor at {:?} edge ({:.0}, {:.0}): {}ms / 1000ms",
+                                        edge, yoga_x, yoga_y, elapsed.as_millis()
+                                    ));
+                                    yoga_edge_dwell = Some((start_time, edge, now));
+                                }
+                                if elapsed >= dwell_required {
+                                    session_log(&format!(
+                                        "[DWELL COMPLETE] Yoga dwelled at {:?} edge for {}ms! Returning to G50.",
+                                        edge, elapsed.as_millis()
+                                    ));
+                                    // Save last yoga position, 30px inward so resuming won't immediately dwell
+                                    yoga_x = match edge {
+                                        ScreenEdge::Left => 30.0,
+                                        ScreenEdge::Right => cur_rw - 31.0,
+                                        _ => yoga_x.clamp(30.0, cur_rw - 31.0),
+                                    };
+                                    yoga_y = match edge {
+                                        ScreenEdge::Top => 30.0,
+                                        ScreenEdge::Bottom => cur_rh - 31.0,
+                                        _ => yoga_y.clamp(30.0, cur_rh - 31.0),
+                                    };
+                                    yoga_edge_dwell = None;
+                                    is_remote_active.store(false, Ordering::SeqCst);
+                                }
+                            } else {
+                                session_log(&format!(
+                                    "[DWELL RESET] Yoga cursor changed edge from {:?} to {:?} at ({:.0}, {:.0})",
+                                    prev_edge, edge, yoga_x, yoga_y
+                                ));
+                                yoga_edge_dwell = Some((now, edge, now));
+                            }
+                        }
+                        None => {
+                            session_log(&format!(
+                                "[DWELL START] Yoga cursor reached {:?} edge at ({:.0}, {:.0}). Hold 1.0s to return to G50...",
+                                edge, yoga_x, yoga_y
+                            ));
+                            yoga_edge_dwell = Some((now, edge, now));
+                        }
+                    }
+                }
+                None => {
+                    if let Some((start_time, prev_edge, _)) = yoga_edge_dwell.take() {
+                        session_log(&format!(
+                            "[DWELL CANCEL] Yoga cursor moved away from {:?} edge after {}ms. Ownership stays on Yoga.",
+                            prev_edge, start_time.elapsed().as_millis()
+                        ));
+                    }
+                }
+            }
         }
-        // ── Processing while LOCAL ACTIVE ────────────────────────────────────
+        // ── Processing while LOCAL ACTIVE (controlling G50) ──────────────────
         else {
             let mut root_ret = 0u64;
             let mut child_ret = 0u64;
@@ -425,38 +511,72 @@ pub fn capture_loop(
             }
 
             // Check if cursor reached any edge of G50 screen
-            if let Some(edge) = detect_edge(root_x, root_y, screen_width, screen_height, edge_threshold_px) {
-                last_g50_x = root_x.clamp(10, screen_width - 11);
-                last_g50_y = root_y.clamp(10, screen_height - 11);
+            let g50_edge = detect_edge(root_x, root_y, screen_width, screen_height, threshold);
+            match g50_edge {
+                Some(edge) => {
+                    let now = Instant::now();
+                    match g50_edge_dwell {
+                        Some((start_time, prev_edge, last_prog)) => {
+                            if prev_edge == edge {
+                                let elapsed = start_time.elapsed();
+                                if now.duration_since(last_prog) >= Duration::from_millis(250) {
+                                    session_log(&format!(
+                                        "[DWELL PROGRESS] G50 cursor at {:?} edge ({}, {}): {}ms / 1000ms",
+                                        edge, root_x, root_y, elapsed.as_millis()
+                                    ));
+                                    g50_edge_dwell = Some((start_time, edge, now));
+                                }
+                                if elapsed >= dwell_required {
+                                    session_log(&format!(
+                                        "[DWELL COMPLETE] G50 dwelled at {:?} edge for {}ms! Transferring to Yoga.",
+                                        edge, elapsed.as_millis()
+                                    ));
+                                    // Save last G50 position, 30px inward so resuming won't immediately dwell
+                                    last_g50_x = match edge {
+                                        ScreenEdge::Left => 30,
+                                        ScreenEdge::Right => screen_width - 31,
+                                        _ => root_x.clamp(30, screen_width - 31),
+                                    };
+                                    last_g50_y = match edge {
+                                        ScreenEdge::Top => 30,
+                                        ScreenEdge::Bottom => screen_height - 31,
+                                        _ => root_y.clamp(30, screen_height - 31),
+                                    };
 
-                // Set Yoga entry position based on edge of exit
-                match edge {
-                    ScreenEdge::Right => {
-                        yoga_x = 5.0;
-                        yoga_y = (root_y as f32 / screen_height as f32) * remote_h;
-                    }
-                    ScreenEdge::Left => {
-                        yoga_x = remote_w - 6.0;
-                        yoga_y = (root_y as f32 / screen_height as f32) * remote_h;
-                    }
-                    ScreenEdge::Top => {
-                        yoga_x = (root_x as f32 / screen_width as f32) * remote_w;
-                        yoga_y = remote_h - 6.0;
-                    }
-                    ScreenEdge::Bottom => {
-                        yoga_x = (root_x as f32 / screen_width as f32) * remote_w;
-                        yoga_y = 5.0;
+                                    let _ = edge_trigger_tx.try_send(EdgeTrigger {
+                                        edge,
+                                        norm_x: root_x as f32 / screen_width as f32,
+                                        norm_y: root_y as f32 / screen_height as f32,
+                                    });
+
+                                    g50_edge_dwell = None;
+                                    is_remote_active.store(true, Ordering::SeqCst);
+                                }
+                            } else {
+                                session_log(&format!(
+                                    "[DWELL RESET] G50 cursor changed edge from {:?} to {:?} at ({}, {})",
+                                    prev_edge, edge, root_x, root_y
+                                ));
+                                g50_edge_dwell = Some((now, edge, now));
+                            }
+                        }
+                        None => {
+                            session_log(&format!(
+                                "[DWELL START] G50 cursor reached {:?} edge at ({}, {}). Hold 1.0s to transfer to Yoga...",
+                                edge, root_x, root_y
+                            ));
+                            g50_edge_dwell = Some((now, edge, now));
+                        }
                     }
                 }
-
-                let _ = edge_trigger_tx.try_send(EdgeTrigger {
-                    edge,
-                    norm_x: root_x as f32 / screen_width as f32,
-                    norm_y: root_y as f32 / screen_height as f32,
-                });
-
-                tracing::info!("G50 edge {:?} reached at ({}, {}) -> Transferring to Yoga at ({:.0}, {:.0})!", edge, root_x, root_y, yoga_x, yoga_y);
-                is_remote_active.store(true, Ordering::SeqCst);
+                None => {
+                    if let Some((start_time, prev_edge, _)) = g50_edge_dwell.take() {
+                        session_log(&format!(
+                            "[DWELL CANCEL] G50 cursor moved away from {:?} edge after {}ms. Ownership stays on G50.",
+                            prev_edge, start_time.elapsed().as_millis()
+                        ));
+                    }
+                }
             }
         }
 
@@ -475,8 +595,8 @@ pub fn capture_loop(
         }
         x11::xlib::XCloseDisplay(display);
     }
+    session_log("Capture loop stopped cleanly.");
 }
-
 
 fn detect_edge(
     x: i32,
@@ -492,6 +612,26 @@ fn detect_edge(
     } else if y <= threshold {
         Some(ScreenEdge::Top)
     } else if y >= screen_h - 1 - threshold {
+        Some(ScreenEdge::Bottom)
+    } else {
+        None
+    }
+}
+
+fn detect_yoga_edge(
+    x: f32,
+    y: f32,
+    screen_w: f32,
+    screen_h: f32,
+    threshold: f32,
+) -> Option<ScreenEdge> {
+    if x <= threshold {
+        Some(ScreenEdge::Left)
+    } else if x >= screen_w - 1.0 - threshold {
+        Some(ScreenEdge::Right)
+    } else if y <= threshold {
+        Some(ScreenEdge::Top)
+    } else if y >= screen_h - 1.0 - threshold {
         Some(ScreenEdge::Bottom)
     } else {
         None

@@ -296,6 +296,7 @@ impl ExclusiveOwnershipRouter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{DisplayBounds, ElementState, MouseButton, ScreenLayout};
 
     fn create_test_setup() -> ExclusiveOwnershipRouter {
         let mut topology = ScreenTopology::new();

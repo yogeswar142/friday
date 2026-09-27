@@ -67,6 +67,7 @@ impl NetworkTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::PacketPayload;
     use friday_core::{ElementState, MouseButton, MouseEvent};
 
     #[tokio::test]

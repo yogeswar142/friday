@@ -62,6 +62,15 @@ enum Commands {
         /// Immediately start controlling remote cursor without waiting for edge
         #[arg(short, long, default_value_t = false)]
         direct: bool,
+        /// Edge detection threshold in pixels
+        #[arg(short, long, default_value_t = 3)]
+        edge_px: i32,
+        /// Expected remote width (default: 1920)
+        #[arg(long, default_value_t = 1920)]
+        remote_w: u32,
+        /// Expected remote height (default: 1080)
+        #[arg(long, default_value_t = 1080)]
+        remote_h: u32,
     },
     /// Full session mode: connect two instances, handle circular edge transfer
     Connect {
@@ -93,7 +102,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match cli.command {
         Commands::Info => run_info().await,
         Commands::Receive { bind } => run_receiver(&bind).await,
-        Commands::Send { peer, bind, direct } => run_sender(&bind, &peer, direct).await,
+        Commands::Send {
+            peer,
+            bind,
+            direct,
+            edge_px,
+            remote_w,
+            remote_h,
+        } => run_sender(&bind, &peer, direct, edge_px, remote_w, remote_h).await,
         Commands::Connect { peer, bind, edge_px } => {
             run_connect(&bind, &peer, edge_px).await
         }
@@ -177,7 +193,15 @@ async fn run_receiver(bind_addr: &str) -> Result<(), Box<dyn std::error::Error>>
 
 // ── Sender ────────────────────────────────────────────────────────────────────
 
-async fn run_sender(bind_addr: &str, peer_addr: &str, direct: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_sender(
+    bind_addr: &str,
+    peer_addr: &str,
+    direct: bool,
+    edge_px: i32,
+    remote_w: u32,
+    remote_h: u32,
+) -> Result<(), Box<dyn std::error::Error>> {
+    friday_agent::logger::init_session_log();
     info!("FRIDAY Agent — SENDER mode");
     info!("Binding on: {}", bind_addr);
     info!("Peer: {}", peer_addr);
@@ -189,6 +213,8 @@ async fn run_sender(bind_addr: &str, peer_addr: &str, direct: bool) -> Result<()
     let session = SessionHandle::new(screen_w, screen_h);
     session.set_peer(peer).await;
     session.set_mode(SessionMode::Sender).await;
+    session.remote_screen_w.store(remote_w, Ordering::SeqCst);
+    session.remote_screen_h.store(remote_h, Ordering::SeqCst);
 
     let is_remote_active = Arc::new(AtomicBool::new(direct));
 
@@ -213,15 +239,19 @@ async fn run_sender(bind_addr: &str, peer_addr: &str, direct: bool) -> Result<()
     {
         let stop = session.stop.clone();
         let remote_active_clone = is_remote_active.clone();
+        let rem_w = session.remote_screen_w.clone();
+        let rem_h = session.remote_screen_h.clone();
         std::thread::spawn(move || {
             friday_agent::platform::linux::capture_loop(
                 input_tx,
                 stop,
                 remote_active_clone,
-                4, // edge threshold pixels
+                edge_px,
                 screen_w,
                 screen_h,
                 edge_tx,
+                rem_w,
+                rem_h,
             );
         });
     }
@@ -326,11 +356,15 @@ async fn run_connect(
 
     let is_remote_active = Arc::new(AtomicBool::new(false));
 
+    friday_agent::logger::init_session_log();
+
     // ── Linux capture loop in dedicated OS thread ──
     #[cfg(target_os = "linux")]
     {
         let stop = session.stop.clone();
         let remote_active_clone = is_remote_active.clone();
+        let rem_w = session.remote_screen_w.clone();
+        let rem_h = session.remote_screen_h.clone();
         std::thread::spawn(move || {
             friday_agent::platform::linux::capture_loop(
                 input_tx,
@@ -340,6 +374,8 @@ async fn run_connect(
                 screen_w,
                 screen_h,
                 edge_tx,
+                rem_w,
+                rem_h,
             );
         });
     }
