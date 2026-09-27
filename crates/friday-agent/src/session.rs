@@ -15,7 +15,7 @@
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant},
@@ -53,6 +53,8 @@ pub struct SessionHandle {
     pub local_screen_h: i32,
     pub remote_screen_w: Arc<AtomicU32>,
     pub remote_screen_h: Arc<AtomicU32>,
+    /// Configurable edge dwell time in ms (can be adjusted dynamically by GUI slider in future)
+    pub dwell_ms: Arc<AtomicU64>,
 }
 
 impl SessionHandle {
@@ -65,7 +67,16 @@ impl SessionHandle {
             local_screen_h: screen_h,
             remote_screen_w: Arc::new(AtomicU32::new(1920)),
             remote_screen_h: Arc::new(AtomicU32::new(1080)),
+            dwell_ms: Arc::new(AtomicU64::new(500)), // Default 500ms (0.5s)
         }
+    }
+
+    pub fn get_dwell_ms(&self) -> u64 {
+        self.dwell_ms.load(Ordering::Relaxed)
+    }
+
+    pub fn set_dwell_ms(&self, ms: u64) {
+        self.dwell_ms.store(ms, Ordering::SeqCst);
     }
 
     pub async fn get_mode(&self) -> SessionMode {

@@ -65,6 +65,9 @@ enum Commands {
         /// Edge detection threshold in pixels
         #[arg(short, long, default_value_t = 3)]
         edge_px: i32,
+        /// Edge dwell time in milliseconds before ownership transfer (default: 500ms / 0.5s)
+        #[arg(long, default_value_t = 500)]
+        dwell_ms: u64,
         /// Expected remote width (default: 1920)
         #[arg(long, default_value_t = 1920)]
         remote_w: u32,
@@ -83,6 +86,9 @@ enum Commands {
         /// Edge detection threshold in pixels
         #[arg(short, long, default_value = "3")]
         edge_px: i32,
+        /// Edge dwell time in milliseconds before ownership transfer (default: 500ms / 0.5s)
+        #[arg(long, default_value_t = 500)]
+        dwell_ms: u64,
     },
     /// Print platform diagnostics
     Info,
@@ -107,11 +113,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bind,
             direct,
             edge_px,
+            dwell_ms,
             remote_w,
             remote_h,
-        } => run_sender(&bind, &peer, direct, edge_px, remote_w, remote_h).await,
-        Commands::Connect { peer, bind, edge_px } => {
-            run_connect(&bind, &peer, edge_px).await
+        } => run_sender(&bind, &peer, direct, edge_px, dwell_ms, remote_w, remote_h).await,
+        Commands::Connect { peer, bind, edge_px, dwell_ms } => {
+            run_connect(&bind, &peer, edge_px, dwell_ms).await
         }
     }
 }
@@ -198,6 +205,7 @@ async fn run_sender(
     peer_addr: &str,
     direct: bool,
     edge_px: i32,
+    dwell_ms: u64,
     remote_w: u32,
     remote_h: u32,
 ) -> Result<(), Box<dyn std::error::Error>> {
@@ -215,6 +223,7 @@ async fn run_sender(
     session.set_mode(SessionMode::Sender).await;
     session.remote_screen_w.store(remote_w, Ordering::SeqCst);
     session.remote_screen_h.store(remote_h, Ordering::SeqCst);
+    session.set_dwell_ms(dwell_ms);
 
     let is_remote_active = Arc::new(AtomicBool::new(direct));
 
@@ -241,6 +250,7 @@ async fn run_sender(
         let remote_active_clone = is_remote_active.clone();
         let rem_w = session.remote_screen_w.clone();
         let rem_h = session.remote_screen_h.clone();
+        let dwell = session.dwell_ms.clone();
         std::thread::spawn(move || {
             friday_agent::platform::linux::capture_loop(
                 input_tx,
@@ -252,6 +262,7 @@ async fn run_sender(
                 edge_tx,
                 rem_w,
                 rem_h,
+                dwell,
             );
         });
     }
@@ -324,6 +335,7 @@ async fn run_connect(
     bind_addr: &str,
     peer_addr: &str,
     edge_px: i32,
+    dwell_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("FRIDAY Agent — CONNECT mode (circular edge handoff)");
     info!("Bind:  {}", bind_addr);
@@ -341,6 +353,7 @@ async fn run_connect(
     session.set_peer(peer).await;
     // Start as Sender (G50 = primary sender until first edge crossing)
     session.set_mode(SessionMode::Sender).await;
+    session.set_dwell_ms(dwell_ms);
 
     let (input_tx, input_rx) = mpsc::channel::<friday_core::InputEvent>(512);
     let (edge_tx, mut edge_rx) = mpsc::channel::<EdgeTrigger>(32);
@@ -365,6 +378,7 @@ async fn run_connect(
         let remote_active_clone = is_remote_active.clone();
         let rem_w = session.remote_screen_w.clone();
         let rem_h = session.remote_screen_h.clone();
+        let dwell = session.dwell_ms.clone();
         std::thread::spawn(move || {
             friday_agent::platform::linux::capture_loop(
                 input_tx,
@@ -376,6 +390,7 @@ async fn run_connect(
                 edge_tx,
                 rem_w,
                 rem_h,
+                dwell,
             );
         });
     }

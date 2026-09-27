@@ -12,7 +12,7 @@
 ///   XTestFakeRelativeMotionEvent for relative move injection
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU32, Ordering},
+    atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -226,6 +226,7 @@ pub fn capture_loop(
     edge_trigger_tx: mpsc::Sender<EdgeTrigger>,
     remote_screen_w: Arc<AtomicU32>,
     remote_screen_h: Arc<AtomicU32>,
+    dwell_ms: Arc<AtomicU64>,
 ) {
     let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
     if display.is_null() {
@@ -249,20 +250,22 @@ pub fn capture_loop(
     let mut yoga_x = initial_rw / 2.0;
     let mut yoga_y = initial_rh / 2.0;
 
-    let dwell_required = Duration::from_millis(1000); // 1.0 second dwell time
     let mut g50_edge_dwell: Option<(Instant, ScreenEdge, Instant)> = None;
     let mut yoga_edge_dwell: Option<(Instant, ScreenEdge, Instant)> = None;
 
     let poll_interval = Duration::from_millis(2); // 500 Hz
     let threshold = edge_threshold_px.max(3);
+    let initial_dwell = dwell_ms.load(Ordering::Relaxed);
 
     session_log(&format!(
-        "Capture loop started: G50 screen={}x{}, remote screen={}x{}, dwell_time=1000ms, threshold={}px",
-        screen_width, screen_height, initial_rw, initial_rh, threshold
+        "Capture loop started: G50 screen={}x{}, remote screen={}x{}, dwell_time={}ms, threshold={}px",
+        screen_width, screen_height, initial_rw, initial_rh, initial_dwell, threshold
     ));
 
     while !stop.load(Ordering::Relaxed) {
         let loop_start = Instant::now();
+        let dwell_required = Duration::from_millis(dwell_ms.load(Ordering::Relaxed));
+        let progress_interval = (dwell_required / 2).max(Duration::from_millis(100));
         let remote_active = is_remote_active.load(Ordering::Relaxed);
         let ts = timestamp_ms();
         let cur_rw = remote_screen_w.load(Ordering::Relaxed) as f32;
@@ -433,10 +436,10 @@ pub fn capture_loop(
                         Some((start_time, prev_edge, last_prog)) => {
                             if prev_edge == edge {
                                 let elapsed = start_time.elapsed();
-                                if now.duration_since(last_prog) >= Duration::from_millis(250) {
+                                if now.duration_since(last_prog) >= progress_interval {
                                     session_log(&format!(
-                                        "[DWELL PROGRESS] Yoga cursor at {:?} edge ({:.0}, {:.0}): {}ms / 1000ms",
-                                        edge, yoga_x, yoga_y, elapsed.as_millis()
+                                        "[DWELL PROGRESS] Yoga cursor at {:?} edge ({:.0}, {:.0}): {}ms / {}ms",
+                                        edge, yoga_x, yoga_y, elapsed.as_millis(), dwell_required.as_millis()
                                     ));
                                     yoga_edge_dwell = Some((start_time, edge, now));
                                 }
@@ -469,8 +472,8 @@ pub fn capture_loop(
                         }
                         None => {
                             session_log(&format!(
-                                "[DWELL START] Yoga cursor reached {:?} edge at ({:.0}, {:.0}). Hold 1.0s to return to G50...",
-                                edge, yoga_x, yoga_y
+                                "[DWELL START] Yoga cursor reached {:?} edge at ({:.0}, {:.0}). Hold {:.1}s to return to G50...",
+                                edge, yoga_x, yoga_y, dwell_required.as_secs_f32()
                             ));
                             yoga_edge_dwell = Some((now, edge, now));
                         }
@@ -519,10 +522,10 @@ pub fn capture_loop(
                         Some((start_time, prev_edge, last_prog)) => {
                             if prev_edge == edge {
                                 let elapsed = start_time.elapsed();
-                                if now.duration_since(last_prog) >= Duration::from_millis(250) {
+                                if now.duration_since(last_prog) >= progress_interval {
                                     session_log(&format!(
-                                        "[DWELL PROGRESS] G50 cursor at {:?} edge ({}, {}): {}ms / 1000ms",
-                                        edge, root_x, root_y, elapsed.as_millis()
+                                        "[DWELL PROGRESS] G50 cursor at {:?} edge ({}, {}): {}ms / {}ms",
+                                        edge, root_x, root_y, elapsed.as_millis(), dwell_required.as_millis()
                                     ));
                                     g50_edge_dwell = Some((start_time, edge, now));
                                 }
@@ -562,8 +565,8 @@ pub fn capture_loop(
                         }
                         None => {
                             session_log(&format!(
-                                "[DWELL START] G50 cursor reached {:?} edge at ({}, {}). Hold 1.0s to transfer to Yoga...",
-                                edge, root_x, root_y
+                                "[DWELL START] G50 cursor reached {:?} edge at ({}, {}). Hold {:.1}s to transfer to Yoga...",
+                                edge, root_x, root_y, dwell_required.as_secs_f32()
                             ));
                             g50_edge_dwell = Some((now, edge, now));
                         }
