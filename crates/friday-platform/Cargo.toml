@@ -1,0 +1,13 @@
+[package]
+name = "friday-platform"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+
+[dependencies]
+friday-core = { path = "../friday-core" }
+async-trait.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

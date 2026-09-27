@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "crates/friday-core",
+    "crates/friday-platform",
+    "crates/friday-network",
+    "crates/friday-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["FRIDAY Contributors"]
+license = "MIT"
+repository = "https://github.com/yogeswar142/friday"
+
+[workspace.dependencies]
+tokio = { version = "1.38", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+bytes = "1.6"
+clap = { version = "4.5", features = ["derive"] }
+async-trait = "0.1"
