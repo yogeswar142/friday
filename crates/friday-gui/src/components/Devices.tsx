@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import {
+  Bell,
   CheckCircle2,
   HardDrive,
   Laptop,
@@ -11,60 +12,154 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { DeviceInfo, DiscoveredDevice } from "../types";
+import { DeviceInfo, DiscoveredDevice, PendingPairRequest } from "../types";
 
 interface DevicesProps {
   devices: DeviceInfo[];
   discovered: DiscoveredDevice[];
+  pendingRequests: PendingPairRequest[];
   activeDeviceId: string;
-  onPairDevice: (deviceId: string) => void;
+  onInitiatePairing: (deviceId: string, pin: string) => Promise<boolean>;
   onAddManualDevice: (ip: string, port?: number, name?: string) => void;
   onUnpairDevice: (deviceId: string) => void;
   onConnectDevice: (deviceId: string) => void;
   onDisconnectDevice: (deviceId: string) => void;
   onSwitchOwner: (deviceId: string) => void;
   onRefreshDiscovery: () => void;
+  onRespondToPairRequest: (pin: string, accept: boolean) => void;
 }
 
 export const Devices: React.FC<DevicesProps> = ({
   devices,
   discovered,
+  pendingRequests,
   activeDeviceId,
-  onPairDevice,
+  onInitiatePairing,
   onAddManualDevice,
   onUnpairDevice,
   onConnectDevice,
   onDisconnectDevice,
   onSwitchOwner,
   onRefreshDiscovery,
+  onRespondToPairRequest,
 }) => {
   const [pairingModalDev, setPairingModalDev] = useState<DiscoveredDevice | null>(null);
   const [pairCode, setPairCode] = useState("");
   const [isPairingLoading, setIsPairingLoading] = useState(false);
+  const [pairingResult, setPairingResult] = useState<"accepted" | "rejected" | null>(null);
   const [manualIp, setManualIp] = useState("");
   const [manualName, setManualName] = useState("");
   const [manualPort, setManualPort] = useState("48700");
 
-
   const startPairingFlow = (dev: DiscoveredDevice) => {
-    setPairingModalDev(dev);
-    // Generate a secure 6-digit confirmation PIN
+    // Generate a cryptographically-styled 6-digit PIN
     const pin = Math.floor(100000 + Math.random() * 900000).toString();
     setPairCode(pin);
+    setPairingResult(null);
+    setPairingModalDev(dev);
   };
 
-  const confirmPairing = () => {
+  const confirmPairing = async () => {
     if (!pairingModalDev) return;
     setIsPairingLoading(true);
-    setTimeout(() => {
-      onPairDevice(pairingModalDev.id);
+    setPairingResult(null);
+    try {
+      // Send real UDP pair request — blocks (up to 30s) waiting for remote user to confirm
+      const accepted = await onInitiatePairing(pairingModalDev.id, pairCode);
+      setPairingResult(accepted ? "accepted" : "rejected");
+      if (accepted) {
+        // Close modal after short delay so user sees "Paired!" flash
+        setTimeout(() => {
+          setPairingModalDev(null);
+          setPairingResult(null);
+        }, 1500);
+      }
+    } catch (e) {
+      setPairingResult("rejected");
+    } finally {
       setIsPairingLoading(false);
-      setPairingModalDev(null);
-    }, 400);
+    }
   };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
+
+      {/* ── Incoming Pair Requests Banner (shown on remote device) ── */}
+      {pendingRequests.length > 0 && (
+        <div
+          style={{
+            background: "rgba(6, 182, 212, 0.08)",
+            border: "1px solid rgba(6, 182, 212, 0.4)",
+            borderRadius: "var(--radius-md)",
+            padding: "16px 20px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 700, fontSize: "14px", color: "#06b6d4" }}>
+            <Bell size={16} />
+            Incoming Pairing Request{pendingRequests.length > 1 ? "s" : ""}
+          </div>
+          {pendingRequests.map((req) => (
+            <div
+              key={req.pin}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                gap: "10px",
+                background: "var(--bg-secondary)",
+                borderRadius: "var(--radius-sm)",
+                padding: "14px 16px",
+                border: "1px solid var(--border-subtle)",
+              }}
+            >
+              <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
+                <strong style={{ color: "var(--text-primary)" }}>{req.from_name}</strong>
+                {" "}({req.from_ip}) wants to pair with this machine.
+              </p>
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
+                Confirm that the PIN on their screen matches:
+              </p>
+              <div
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "28px",
+                  fontWeight: 700,
+                  letterSpacing: "8px",
+                  textAlign: "center",
+                  padding: "12px",
+                  background: "var(--bg-card)",
+                  borderRadius: "var(--radius-sm)",
+                  border: "1px solid var(--border-focus)",
+                  color: "#06b6d4",
+                }}
+              >
+                {req.pin}
+              </div>
+              <div style={{ display: "flex", gap: "10px" }}>
+                <button
+                  className="btn btn-sm btn-outline"
+                  style={{ flex: 1, color: "var(--accent-rose)" }}
+                  onClick={() => onRespondToPairRequest(req.pin, false)}
+                >
+                  <XCircle size={13} />
+                  Reject
+                </button>
+                <button
+                  className="btn btn-sm btn-primary"
+                  style={{ flex: 2 }}
+                  onClick={() => onRespondToPairRequest(req.pin, true)}
+                >
+                  <CheckCircle2 size={13} />
+                  Accept & Pair
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Connected Devices Section */}
       <div className="card">
         <div className="card-header">
@@ -396,44 +491,97 @@ export const Devices: React.FC<DevicesProps> = ({
               <h3 style={{ fontSize: "16px", fontWeight: 700 }}>Pairing with {pairingModalDev.name}</h3>
             </div>
 
-            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "16px" }}>
-              Verify that the security PIN below matches the confirmation prompt on {pairingModalDev.name} ({pairingModalDev.ip_address}):
+            {/* PIN display */}
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px" }}>
+              Security PIN — this code will appear on <strong>{pairingModalDev.name}</strong> ({pairingModalDev.ip_address}).
+              Verify it matches before accepting there.
             </p>
 
             <div
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: "28px",
+                fontSize: "32px",
                 fontWeight: 700,
-                letterSpacing: "6px",
+                letterSpacing: "8px",
                 textAlign: "center",
-                padding: "16px",
+                padding: "18px",
                 background: "var(--bg-secondary)",
                 borderRadius: "var(--radius-md)",
-                border: "1px solid var(--border-focus)",
-                color: "var(--accent-cyan)",
-                marginBottom: "20px",
+                border: `1px solid ${
+                  pairingResult === "accepted"
+                    ? "var(--accent-emerald)"
+                    : pairingResult === "rejected"
+                    ? "var(--accent-rose)"
+                    : "var(--border-focus)"
+                }`,
+                color:
+                  pairingResult === "accepted"
+                    ? "#10b981"
+                    : pairingResult === "rejected"
+                    ? "#f43f5e"
+                    : "var(--accent-cyan)",
+                marginBottom: "16px",
+                transition: "border-color 0.3s, color 0.3s",
               }}
             >
               {pairCode}
             </div>
 
+            {/* Status messages */}
+            {!isPairingLoading && !pairingResult && (
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", marginBottom: "14px" }}>
+                Click <strong>Send Request</strong> — the remote machine will show a confirmation dialog.
+              </p>
+            )}
+            {isPairingLoading && (
+              <p style={{ fontSize: "13px", color: "#06b6d4", textAlign: "center", marginBottom: "14px" }}>
+                ⏳ Waiting for {pairingModalDev.name} to accept… (up to 30 seconds)
+              </p>
+            )}
+            {pairingResult === "accepted" && (
+              <p style={{ fontSize: "13px", color: "#10b981", textAlign: "center", marginBottom: "14px", fontWeight: 600 }}>
+                ✅ Paired successfully! Device added to your ring.
+              </p>
+            )}
+            {pairingResult === "rejected" && (
+              <div style={{ marginBottom: "14px" }}>
+                <p style={{ fontSize: "13px", color: "#f43f5e", textAlign: "center", fontWeight: 600 }}>
+                  ❌ Pairing was rejected or timed out.
+                </p>
+                <p style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", marginTop: "4px" }}>
+                  Make sure FRIDAY is running on {pairingModalDev.name} and try again.
+                </p>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 className="btn btn-outline"
-                onClick={() => setPairingModalDev(null)}
+                onClick={() => { setPairingModalDev(null); setPairingResult(null); }}
                 style={{ flex: 1 }}
-              >
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={confirmPairing}
                 disabled={isPairingLoading}
-                style={{ flex: 1 }}
               >
-                {isPairingLoading ? "Pairing..." : "Confirm & Connect"}
+                {pairingResult === "accepted" ? "Close" : "Cancel"}
               </button>
+              {!pairingResult && (
+                <button
+                  className="btn btn-primary"
+                  onClick={confirmPairing}
+                  disabled={isPairingLoading}
+                  style={{ flex: 1 }}
+                >
+                  {isPairingLoading ? "Waiting…" : "Send Request"}
+                </button>
+              )}
+              {pairingResult === "rejected" && (
+                <button
+                  className="btn btn-primary"
+                  onClick={confirmPairing}
+                  style={{ flex: 1 }}
+                >
+                  Retry
+                </button>
+              )}
             </div>
           </div>
         </div>

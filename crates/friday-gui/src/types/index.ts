@@ -34,6 +34,14 @@ export interface DiscoveredDevice {
   is_paired: boolean;
 }
 
+/** An incoming pairing request from a remote FRIDAY node */
+export interface PendingPairRequest {
+  pin: string;
+  from_id: string;
+  from_name: string;
+  from_ip: string;
+}
+
 export interface TopologyLink {
   source: string;
   target: string;

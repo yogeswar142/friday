@@ -2,6 +2,7 @@ pub mod commands;
 pub mod config;
 pub mod diagnostics;
 pub mod discovery;
+pub mod pairing;
 pub mod state;
 pub mod types;
 
@@ -10,11 +11,27 @@ use std::sync::{Arc, Mutex};
 use state::AppState;
 
 pub fn run() {
+    // On Linux, WebKit 2.52+ with DMA-BUF renderer can fail to load the tauri://
+    // custom URI scheme, showing a white screen with "Connection refused".
+    // Setting these env vars before GTK/WebKit initializes fixes the issue.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+        if std::env::var("WEBKIT_DISABLE_COMPOSITING_MODE").is_err() {
+            std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        }
+    }
+
     let shared_state = Arc::new(Mutex::new(AppState::new()));
     let stop_flag = Arc::new(AtomicBool::new(false));
 
     // Launch background UDP discovery service
-    discovery::start_discovery_service(shared_state.clone(), stop_flag);
+    discovery::start_discovery_service(shared_state.clone(), stop_flag.clone());
+
+    // Launch background UDP pairing responder (listens for incoming pair requests)
+    pairing::start_pairing_responder(stop_flag.clone());
 
     tauri::Builder::default()
         .manage(shared_state)
@@ -46,6 +63,9 @@ pub fn run() {
             commands::get_platform_permissions,
             commands::open_permission_settings,
             commands::get_logs,
+            commands::initiate_pairing,
+            commands::get_pending_pair_requests,
+            commands::respond_to_pair_request,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FRIDAY desktop application");

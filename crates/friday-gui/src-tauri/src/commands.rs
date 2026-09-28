@@ -415,3 +415,187 @@ pub fn get_logs(state: State<'_, SharedAppState>) -> Vec<LogEntryDto> {
     let app = state.lock().unwrap();
     app.logs.clone()
 }
+
+// ── Pairing handshake commands ─────────────────────────────────────────────────
+
+/// Initiate a pairing request to a discovered remote device.
+/// Sends the PIN over UDP to the remote machine's pairing port (48702),
+/// then BLOCKS (up to 30 seconds) waiting for the remote user to Accept/Reject.
+/// Returns Ok(true) if accepted, Ok(false) if rejected/timeout.
+///
+/// NOTE: This command MUST be called from the frontend with a long-enough timeout.
+/// The frontend generates the PIN, shows it to the local user, then calls this.
+/// The remote machine's GUI shows a corresponding incoming-request dialog.
+#[tauri::command]
+pub fn initiate_pairing(
+    device_id: String,
+    pin: String,
+    state: State<'_, SharedAppState>,
+) -> Result<bool, String> {
+    let (local_id, local_name, target_ip) = {
+        let app = state.lock().unwrap();
+
+        // Find the device in discovered list
+        let dev = app
+            .discovered_devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .or_else(|| {
+                // Also search in paired list (for reconnect scenarios)
+                None
+            })
+            .cloned();
+
+        let dev = dev.ok_or_else(|| {
+            format!(
+                "Device {} not found in discovered devices list",
+                device_id
+            )
+        })?;
+
+        let local_id = app.local_device_id.clone();
+        let local_name = app
+            .devices
+            .first()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| local_id.clone());
+
+        (local_id, local_name, dev.ip_address.clone())
+    };
+
+    app_log(&state, "INFO", "friday_network::pairing", &format!(
+        "Initiating pairing with {} (IP: {}) PIN={}",
+        device_id, target_ip, pin
+    ));
+
+    // This blocks the Tauri command thread for up to 30 seconds.
+    // Tauri async commands run on a thread pool so the GUI stays responsive.
+    let accepted =
+        crate::pairing::send_pairing_request(&target_ip, &local_id, &local_name, &pin)?;
+
+    if accepted {
+        // Promote discovered → paired device automatically
+        let mut app = state.lock().unwrap();
+        if let Some(idx) = app.discovered_devices.iter().position(|d| d.id == device_id) {
+            let discovered = app.discovered_devices.remove(idx);
+            let new_device = crate::types::DeviceInfo {
+                id: discovered.id.clone(),
+                name: discovered.name.clone(),
+                os: discovered.os.clone(),
+                arch: discovered.arch.clone(),
+                ip_address: discovered.ip_address.clone(),
+                port: discovered.port,
+                is_local: false,
+                is_active: false,
+                is_connected: true,
+                latency_ms: 0.0,
+                capabilities: vec![
+                    "mouse_capture".into(),
+                    "mouse_injection".into(),
+                    "edge_detection".into(),
+                ],
+            };
+            app.devices.push(new_device.clone());
+            app.topology.add_device(friday_core::ScreenLayout {
+                device_id: discovered.id.clone(),
+                name: discovered.name.clone(),
+                bounds: friday_core::DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+            });
+            app.add_log(
+                "INFO",
+                "friday_network::pairing",
+                &format!("Device {} paired successfully (PIN confirmed)", discovered.name),
+            );
+            app.persist_config();
+        }
+    } else {
+        app_log(&state, "WARN", "friday_network::pairing", &format!(
+            "Pairing with {} was rejected or timed out",
+            device_id
+        ));
+    }
+
+    Ok(accepted)
+}
+
+/// Poll for incoming pair requests on this machine.
+/// The remote machine's GUI calls this every 2 seconds.
+/// Returns a list of PendingPairRequest objects.
+#[tauri::command]
+pub fn get_pending_pair_requests() -> Vec<crate::pairing::PendingPairRequest> {
+    crate::pairing::get_pending_requests()
+}
+
+/// Accept or reject an incoming pair request.
+/// Called by the remote machine's user when they see the incoming pairing modal.
+/// If accepted, the device is also added to this machine's paired list.
+#[tauri::command]
+pub fn respond_to_pair_request(
+    pin: String,
+    accept: bool,
+    state: State<'_, SharedAppState>,
+) -> Result<(), String> {
+    let request = {
+        let requests = crate::pairing::get_pending_requests();
+        requests
+            .into_iter()
+            .find(|r| r.pin == pin)
+            .ok_or_else(|| format!("No pending pair request with PIN {}", pin))?
+    };
+
+    // Send network reply
+    crate::pairing::respond_to_request(&request, accept)?;
+
+    if accept {
+        // Add the initiator device to OUR paired list too (symmetric pairing)
+        let mut app = state.lock().unwrap();
+        let already_known = app.devices.iter().any(|d| d.ip_address == request.from_ip);
+        if !already_known {
+            let new_device = crate::types::DeviceInfo {
+                id: request.from_id.clone(),
+                name: request.from_name.clone(),
+                os: "Remote Machine".into(),
+                arch: "x64".into(),
+                ip_address: request.from_ip.clone(),
+                port: 48700,
+                is_local: false,
+                is_active: false,
+                is_connected: true,
+                latency_ms: 0.0,
+                capabilities: vec![
+                    "mouse_capture".into(),
+                    "mouse_injection".into(),
+                    "edge_detection".into(),
+                ],
+            };
+            app.devices.push(new_device);
+            app.topology.add_device(friday_core::ScreenLayout {
+                device_id: request.from_id.clone(),
+                name: request.from_name.clone(),
+                bounds: friday_core::DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+            });
+            app.add_log(
+                "INFO",
+                "friday_network::pairing",
+                &format!("Accepted pairing from {} — device added to ring", request.from_name),
+            );
+            app.persist_config();
+        }
+    } else {
+        let app = state.lock().unwrap();
+        drop(app); // release lock before log
+        app_log(&state, "INFO", "friday_network::pairing", &format!(
+            "Rejected pairing request from {} (PIN {})",
+            request.from_name, pin
+        ));
+    }
+
+    Ok(())
+}
+
+// Helper: add a log entry without holding the lock across an await
+fn app_log(state: &State<'_, SharedAppState>, level: &str, target: &str, msg: &str) {
+    if let Ok(mut app) = state.lock() {
+        app.add_log(level, target, msg);
+    }
+}

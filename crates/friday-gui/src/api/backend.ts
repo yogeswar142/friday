@@ -5,6 +5,7 @@ import {
   DiscoveredDevice,
   EngineStatus,
   LogEntry,
+  PendingPairRequest,
   PlatformCapabilities,
   PlatformPermissions,
   SettingsDto,
@@ -296,6 +297,16 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
         { timestamp: "17:15:05", level: "INFO", target: "friday_network::transport", message: "UDP Transport listening on 0.0.0.0:48700" },
       ] as unknown as T;
 
+    case "get_pending_pair_requests":
+      return [] as unknown as T;
+
+    case "respond_to_pair_request":
+      return undefined as unknown as T;
+
+    case "initiate_pairing":
+      // In mock mode, simulate instant accept after 1.5s
+      return new Promise<T>((resolve) => setTimeout(() => resolve(true as unknown as T), 1500)) as unknown as T;
+
     default:
       return undefined as unknown as T;
   }
@@ -331,4 +342,13 @@ export const api = {
   getPlatformPermissions: () => invokeTauri<PlatformPermissions>("get_platform_permissions"),
   openPermissionSettings: () => invokeTauri<void>("open_permission_settings"),
   getLogs: () => invokeTauri<LogEntry[]>("get_logs"),
+  /** Send pairing request to remote device — blocks up to 30s waiting for user accept */
+  initiatePairing: (device_id: string, pin: string) =>
+    invokeTauri<boolean>("initiate_pairing", { device_id, pin }),
+  /** Poll for incoming pair requests on this machine (call every 2s) */
+  getPendingPairRequests: () =>
+    invokeTauri<PendingPairRequest[]>("get_pending_pair_requests"),
+  /** Accept or reject an incoming pair request */
+  respondToPairRequest: (pin: string, accept: boolean) =>
+    invokeTauri<void>("respond_to_pair_request", { pin, accept }),
 };

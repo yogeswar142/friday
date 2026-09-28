@@ -14,6 +14,7 @@ import {
   DiscoveredDevice,
   EngineStatus,
   LogEntry,
+  PendingPairRequest,
   PlatformCapabilities,
   PlatformPermissions,
   SettingsDto,
@@ -28,6 +29,7 @@ export const App: React.FC = () => {
   const [telemetry, setTelemetry] = useState<TelemetryDto | null>(null);
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
+  const [pendingRequests, setPendingRequests] = useState<PendingPairRequest[]>([]);
   const [topology, setTopology] = useState<TopologyDto | null>(null);
   const [permissions, setPermissions] = useState<PlatformPermissions | null>(null);
   const [capabilities, setCapabilities] = useState<PlatformCapabilities | null>(null);
@@ -55,6 +57,8 @@ export const App: React.FC = () => {
     const interval = setInterval(() => {
       api.getStatus().then(setStatus).catch(() => {});
       api.getTelemetry().then(setTelemetry).catch(() => {});
+      // Poll for incoming pair requests on this machine (from remote FRIDAY nodes)
+      api.getPendingPairRequests().then(setPendingRequests).catch(() => {});
     }, 2000);
 
     return () => clearInterval(interval);
@@ -138,9 +142,26 @@ export const App: React.FC = () => {
     }
   };
 
-  const handlePairDevice = async (deviceId: string) => {
-    await api.pairDevice(deviceId);
-    refreshAllData();
+  const handleInitiatePairing = async (deviceId: string, pin: string): Promise<boolean> => {
+    try {
+      const accepted = await api.initiatePairing(deviceId, pin);
+      if (accepted) refreshAllData();
+      return accepted;
+    } catch (e) {
+      console.error("Pairing failed:", e);
+      return false;
+    }
+  };
+
+  const handleRespondToPairRequest = async (pin: string, accept: boolean) => {
+    try {
+      await api.respondToPairRequest(pin, accept);
+      // Remove from local list immediately
+      setPendingRequests((prev) => prev.filter((r) => r.pin !== pin));
+      if (accept) refreshAllData();
+    } catch (e) {
+      console.error("Failed to respond to pair request:", e);
+    }
   };
 
   const handleUnpairDevice = async (deviceId: string) => {
@@ -219,8 +240,9 @@ export const App: React.FC = () => {
           <Devices
             devices={devices}
             discovered={discovered}
+            pendingRequests={pendingRequests}
             activeDeviceId={status?.active_device_id || ""}
-            onPairDevice={handlePairDevice}
+            onInitiatePairing={handleInitiatePairing}
             onAddManualDevice={handleManualAddDevice}
             onUnpairDevice={handleUnpairDevice}
             onConnectDevice={handleConnectDevice}
@@ -230,6 +252,7 @@ export const App: React.FC = () => {
               const d = await api.discoverDevices();
               setDiscovered(d);
             }}
+            onRespondToPairRequest={handleRespondToPairRequest}
           />
         )}
 
