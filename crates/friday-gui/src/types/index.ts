@@ -40,6 +40,7 @@ export interface PendingPairRequest {
   from_id: string;
   from_name: string;
   from_ip: string;
+  reply_port: number;
 }
 
 export interface TopologyLink {

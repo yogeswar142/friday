@@ -20,14 +20,12 @@ function isTauri(): boolean {
 
 async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (isTauri()) {
-    try {
-      // Dynamic import to support both Tauri 2 and web preview
-      const { invoke } = await import("@tauri-apps/api/core");
-      return await invoke<T>(cmd, args);
-    } catch (e) {
-      console.warn(`[Tauri IPC] ${cmd} failed, using local control layer:`, e);
-    }
+    // Inside real Tauri app — call the Rust backend directly.
+    // Errors propagate to the caller (no silent mock fallback).
+    const { invoke } = await import("@tauri-apps/api/core");
+    return await invoke<T>(cmd, args);
   }
+  // Browser / dev preview only — use local mock
   return mockFallback<T>(cmd, args);
 }
 
