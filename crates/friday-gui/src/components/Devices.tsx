@@ -47,15 +47,16 @@ export const Devices: React.FC<DevicesProps> = ({
   const [pairCode, setPairCode] = useState("");
   const [isPairingLoading, setIsPairingLoading] = useState(false);
   const [pairingResult, setPairingResult] = useState<"accepted" | "rejected" | null>(null);
+  const [pairingError, setPairingError] = useState<string | null>(null);
   const [manualIp, setManualIp] = useState("");
   const [manualName, setManualName] = useState("");
   const [manualPort, setManualPort] = useState("48700");
 
   const startPairingFlow = (dev: DiscoveredDevice) => {
-    // Generate a cryptographically-styled 6-digit PIN
     const pin = Math.floor(100000 + Math.random() * 900000).toString();
     setPairCode(pin);
     setPairingResult(null);
+    setPairingError(null);
     setPairingModalDev(dev);
   };
 
@@ -63,19 +64,22 @@ export const Devices: React.FC<DevicesProps> = ({
     if (!pairingModalDev) return;
     setIsPairingLoading(true);
     setPairingResult(null);
+    setPairingError(null);
     try {
-      // Send real UDP pair request — blocks (up to 30s) waiting for remote user to confirm
       const accepted = await onInitiatePairing(pairingModalDev.id, pairCode);
       setPairingResult(accepted ? "accepted" : "rejected");
       if (accepted) {
-        // Close modal after short delay so user sees "Paired!" flash
         setTimeout(() => {
           setPairingModalDev(null);
           setPairingResult(null);
         }, 1500);
       }
-    } catch (e) {
+    } catch (e: unknown) {
+      // Rust returned a real error string (e.g. firewall / unreachable)
+      const errMsg = typeof e === "string" ? e
+        : (e as { message?: string })?.message ?? String(e);
       setPairingResult("rejected");
+      setPairingError(errMsg);
     } finally {
       setIsPairingLoading(false);
     }
@@ -544,20 +548,38 @@ export const Devices: React.FC<DevicesProps> = ({
               </p>
             )}
             {pairingResult === "rejected" && (
-              <div style={{ marginBottom: "14px" }}>
-                <p style={{ fontSize: "13px", color: "#f43f5e", textAlign: "center", fontWeight: 600 }}>
-                  ❌ Pairing was rejected or timed out.
+              <div style={{
+                marginBottom: "14px",
+                background: "rgba(244,63,94,0.06)",
+                border: "1px solid rgba(244,63,94,0.25)",
+                borderRadius: "var(--radius-sm)",
+                padding: "12px 14px",
+              }}>
+                <p style={{ fontSize: "13px", color: "#f43f5e", fontWeight: 600, marginBottom: "6px" }}>
+                  ❌ {pairingError ? "Cannot reach device" : "Pairing rejected or timed out"}
                 </p>
-                <p style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", marginTop: "4px" }}>
-                  Make sure FRIDAY is running on {pairingModalDev.name} and try again.
-                </p>
+                {pairingError ? (
+                  <pre style={{
+                    fontSize: "11px",
+                    color: "var(--text-secondary)",
+                    whiteSpace: "pre-wrap",
+                    fontFamily: "var(--font-mono)",
+                    margin: 0,
+                  }}>
+                    {pairingError}
+                  </pre>
+                ) : (
+                  <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
+                    The remote user declined or did not respond in time.
+                  </p>
+                )}
               </div>
             )}
 
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 className="btn btn-outline"
-                onClick={() => { setPairingModalDev(null); setPairingResult(null); }}
+                onClick={() => { setPairingModalDev(null); setPairingResult(null); setPairingError(null); }}
                 style={{ flex: 1 }}
                 disabled={isPairingLoading}
               >
@@ -570,13 +592,13 @@ export const Devices: React.FC<DevicesProps> = ({
                   disabled={isPairingLoading}
                   style={{ flex: 1 }}
                 >
-                  {isPairingLoading ? "Waiting…" : "Send Request"}
+                  {isPairingLoading ? "Checking…" : "Send Request"}
                 </button>
               )}
               {pairingResult === "rejected" && (
                 <button
                   className="btn btn-primary"
-                  onClick={confirmPairing}
+                  onClick={() => { setPairingResult(null); setPairingError(null); confirmPairing(); }}
                   style={{ flex: 1 }}
                 >
                   Retry

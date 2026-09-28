@@ -468,6 +468,13 @@ pub fn initiate_pairing(
         device_id, target_ip, pin
     ));
 
+    // Pre-flight: quick 3s probe to confirm FRIDAY is reachable on pairing port.
+    // Returns a clear error immediately instead of waiting 30s on timeout.
+    crate::pairing::probe_pairing_port(&target_ip).map_err(|e| {
+        app_log(&state, "WARN", "friday_network::pairing", &e);
+        e
+    })?;
+
     // This blocks the Tauri command thread for up to 30 seconds.
     // Tauri async commands run on a thread pool so the GUI stays responsive.
     let accepted =

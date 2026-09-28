@@ -67,6 +67,50 @@ pub fn remove_pending(pin: &str) {
 
 // ── Initiator side ─────────────────────────────────────────────────────────────
 
+/// Quick UDP probe — sends a FRIDAY_PAIR_PROBE and expects FRIDAY_PAIR_PROBE_ACK within 3s.
+/// Returns Ok(()) if reachable, Err(message) with actionable text if not.
+pub fn probe_pairing_port(target_ip: &str) -> Result<(), String> {
+    let reply_socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("Cannot bind probe socket: {}", e))?;
+    reply_socket
+        .set_read_timeout(Some(Duration::from_secs(3)))
+        .ok();
+    let reply_port = reply_socket
+        .local_addr()
+        .map(|a| a.port())
+        .unwrap_or(0);
+
+    let send_socket = UdpSocket::bind("0.0.0.0:0")
+        .map_err(|e| format!("Cannot bind send socket: {}", e))?;
+    let dest = format!("{}:{}", target_ip, PAIR_REQUEST_PORT);
+    let msg = format!("FRIDAY_PAIR_PROBE:{}", reply_port);
+    send_socket
+        .send_to(msg.as_bytes(), &dest)
+        .map_err(|e| format!("Cannot reach {}:{} — {}", target_ip, PAIR_REQUEST_PORT, e))?;
+
+    let mut buf = [0u8; 64];
+    match reply_socket.recv_from(&mut buf) {
+        Ok((len, _)) => {
+            let reply = String::from_utf8_lossy(&buf[..len]);
+            if reply.starts_with("FRIDAY_PAIR_PROBE_ACK") {
+                Ok(())
+            } else {
+                // Got a reply but not the expected ACK — old version maybe
+                // Treat as reachable anyway
+                Ok(())
+            }
+        }
+        Err(_) => Err(format!(
+            "Cannot reach FRIDAY on {}:{} after 3 seconds.\n\
+             Make sure:\n\
+             1. FRIDAY is open on that machine (Devices tab)\n\
+             2. That machine has the latest FRIDAY build (git pull + rebuild)\n\
+             3. Windows Firewall: allow UDP port {} inbound for friday-gui.exe",
+            target_ip, PAIR_REQUEST_PORT, PAIR_REQUEST_PORT
+        )),
+    }
+}
+
 /// Initiate pairing with a remote FRIDAY device.
 /// Uses an OS-assigned ephemeral port for the reply so there are no port conflicts
 /// on retries. Blocks the calling thread for up to 30 seconds.
@@ -166,6 +210,14 @@ pub fn start_pairing_responder(stop_flag: Arc<AtomicBool>) {
             match socket.recv_from(&mut buf) {
                 Ok((len, src)) => {
                     let msg = String::from_utf8_lossy(&buf[..len]);
+
+                    // ── Connectivity probe (pre-flight check from initiator) ──
+                    if msg.starts_with("FRIDAY_PAIR_PROBE:") {
+                        let _ = socket.send_to(b"FRIDAY_PAIR_PROBE_ACK", src);
+                        continue;
+                    }
+
+                    // ── Real pair request ──
                     // Format: FRIDAY_PAIR_REQUEST:<pin>:<from_id>:<from_name>:<reply_port>
                     if msg.starts_with("FRIDAY_PAIR_REQUEST:") {
                         let body = msg.trim_start_matches("FRIDAY_PAIR_REQUEST:");
