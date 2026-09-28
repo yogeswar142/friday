@@ -17,98 +17,113 @@ pub struct AppState {
     pub start_time: std::time::Instant,
 }
 
+pub fn detect_local_hostname() -> String {
+    if let Ok(name) = std::env::var("COMPUTERNAME") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() { return trimmed.to_string(); }
+    }
+    if let Ok(name) = std::env::var("HOSTNAME") {
+        let trimmed = name.trim();
+        if !trimmed.is_empty() { return trimmed.to_string(); }
+    }
+    if let Ok(out) = std::process::Command::new("hostname").output() {
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !s.is_empty() { return s; }
+    }
+    "Local-PC".to_string()
+}
+
+pub fn detect_local_ip() -> String {
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if socket.connect("8.8.8.8:80").is_ok() {
+            if let Ok(local_addr) = socket.local_addr() {
+                let ip = local_addr.ip();
+                if !ip.is_unspecified() && !ip.is_loopback() {
+                    return ip.to_string();
+                }
+            }
+        }
+    }
+    "127.0.0.1".to_string()
+}
+
+pub fn detect_os_info() -> (String, String) {
+    let os_str = match std::env::consts::OS {
+        "windows" => "Windows",
+        "linux" => "Linux",
+        "macos" => "macOS",
+        other => other,
+    };
+    let arch_str = match std::env::consts::ARCH {
+        "x86_64" => "x64",
+        "aarch64" => "ARM64",
+        other => other,
+    };
+    (os_str.to_string(), arch_str.to_string())
+}
+
 impl AppState {
     pub fn new() -> Self {
-        let settings = ConfigManager::load();
-        let local_id = "G50".to_string();
-        let mut devices = Vec::new();
+        let config = ConfigManager::load_config();
+        let local_id = detect_local_hostname();
+        let local_ip = detect_local_ip();
+        let (os, arch) = detect_os_info();
 
-        devices.push(DeviceInfo {
-            id: "G50".into(),
-            name: "Lenovo G50 (Local)".into(),
-            os: "Linux".into(),
-            arch: "x64".into(),
-            ip_address: "192.168.1.11".into(),
-            port: 48700,
+        let local_device = DeviceInfo {
+            id: local_id.clone(),
+            name: format!("{} (This Machine)", local_id),
+            os,
+            arch,
+            ip_address: local_ip.clone(),
+            port: config.settings.peer_port,
             is_local: true,
             is_active: true,
             is_connected: true,
             latency_ms: 0.0,
             capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
-        });
+        };
 
-        devices.push(DeviceInfo {
-            id: "Yoga".into(),
-            name: "Lenovo Yoga".into(),
-            os: "Windows 11".into(),
-            arch: "x64".into(),
-            ip_address: "192.168.1.2".into(),
-            port: 48700,
-            is_local: false,
-            is_active: false,
-            is_connected: true,
-            latency_ms: 0.72,
-            capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
-        });
+        let mut devices = vec![local_device];
+        for mut peer in config.paired_devices {
+            if peer.id != local_id {
+                peer.is_local = false;
+                peer.is_active = false;
+                devices.push(peer);
+            }
+        }
 
-        devices.push(DeviceInfo {
-            id: "MacBook".into(),
-            name: "MacBook Air".into(),
-            os: "macOS Sonoma".into(),
-            arch: "arm64".into(),
-            ip_address: "192.168.1.45".into(),
-            port: 48700,
-            is_local: false,
-            is_active: false,
-            is_connected: true,
-            latency_ms: 1.15,
-            capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
-        });
+        let mut ring = config.ring_topology;
+        if ring.is_empty() || !ring.contains(&local_id) {
+            ring = devices.iter().map(|d| d.id.clone()).collect();
+        }
 
-        let mut discovered = Vec::new();
-        discovered.push(DiscoveredDevice {
-            id: "ThinkPad".into(),
-            name: "ThinkPad X1".into(),
-            os: "Linux Fedora".into(),
-            arch: "x64".into(),
-            ip_address: "192.168.1.88".into(),
-            port: 48700,
-            is_paired: false,
-        });
-
-        // Initialize circular topology
-        let layouts = vec![
+        let layouts: Vec<ScreenLayout> = devices.iter().map(|d| {
             ScreenLayout {
-                device_id: "G50".into(),
-                name: "Lenovo G50".into(),
-                bounds: DisplayBounds::new(0, 0, 1366, 768, 1.0, true),
-            },
-            ScreenLayout {
-                device_id: "Yoga".into(),
-                name: "Lenovo Yoga".into(),
-                bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
-            },
-            ScreenLayout {
-                device_id: "MacBook".into(),
-                name: "MacBook Air".into(),
-                bounds: DisplayBounds::new(0, 0, 2560, 1600, 2.0, false),
-            },
-        ];
-        let ct = CircularTopology::from_ring(layouts);
+                device_id: d.id.clone(),
+                name: d.name.clone(),
+                bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, d.is_local),
+            }
+        }).collect();
+
+        let mut ct = CircularTopology::from_ring(layouts);
+        ct.set_ring(ring.clone());
+        ct.set_active_device(&local_id);
 
         let mut logs = Vec::new();
         logs.push(LogEntryDto {
             timestamp: chrono_now(),
             level: "INFO".into(),
             target: "friday_core::engine".into(),
-            message: "FRIDAY Core Control Plane initialized with Circular N-Device Routing".into(),
+            message: format!("FRIDAY initialized on local machine: {} ({})", local_id, local_ip),
         });
-        logs.push(LogEntryDto {
-            timestamp: chrono_now(),
-            level: "INFO".into(),
-            target: "friday_core::topology".into(),
-            message: "Circular ring topology established: G50 → Yoga → MacBook → G50".into(),
-        });
+        if ring.len() >= 2 {
+            logs.push(LogEntryDto {
+                timestamp: chrono_now(),
+                level: "INFO".into(),
+                target: "friday_core::topology".into(),
+                message: format!("Restored circular ring: {} → {}", ring.join(" → "), ring[0]),
+            });
+        }
 
         Self {
             engine_running: true,
@@ -117,20 +132,30 @@ impl AppState {
             active_device_id: local_id,
             topology: ct,
             devices,
-            discovered_devices: discovered,
-            settings,
+            discovered_devices: Vec::new(),
+            settings: config.settings,
             telemetry: TelemetryDto {
-                latency_ms: 0.82,
+                latency_ms: 0.0,
                 packet_loss_pct: 0.0,
-                packets_per_sec: 240,
-                bytes_per_sec: 15360,
-                total_transfers: 14,
+                packets_per_sec: 0,
+                bytes_per_sec: 0,
+                total_transfers: 0,
                 uptime_seconds: 0,
             },
             logs,
             start_time: std::time::Instant::now(),
         }
     }
+
+    pub fn persist_config(&self) {
+        let app_cfg = crate::config::AppConfig {
+            settings: self.settings.clone(),
+            paired_devices: self.devices.iter().filter(|d| !d.is_local).cloned().collect(),
+            ring_topology: self.topology.ring.clone(),
+        };
+        let _ = ConfigManager::save_config(&app_cfg);
+    }
+
 
     pub fn get_engine_status(&self) -> EngineStatus {
         let state = if !self.engine_running {
@@ -197,16 +222,16 @@ mod tests {
         let state = AppState::new();
         assert!(state.engine_running);
         assert!(!state.engine_paused);
-        assert_eq!(state.local_device_id, "G50");
-        assert_eq!(state.active_device_id, "G50");
-        assert_eq!(state.devices.len(), 3);
-        assert_eq!(state.topology.ring.len(), 3);
+        assert!(!state.local_device_id.is_empty());
+        assert_eq!(state.active_device_id, state.local_device_id);
+        assert!(!state.devices.is_empty());
+        assert_eq!(state.devices[0].id, state.local_device_id);
+        assert!(state.devices[0].is_local);
 
         let status = state.get_engine_status();
         assert_eq!(status.state, "running");
-        assert_eq!(status.active_device_id, "G50");
-        assert_eq!(status.connected_count, 3);
-        assert!(status.topology_summary.contains("G50 → Yoga → MacBook → G50"));
+        assert_eq!(status.active_device_id, state.local_device_id);
+        assert!(status.connected_count >= 1);
     }
 
     #[test]
@@ -218,3 +243,4 @@ mod tests {
         assert_eq!(state.logs.len(), 1000);
     }
 }
+

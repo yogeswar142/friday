@@ -71,8 +71,102 @@ pub fn get_devices(state: State<'_, SharedAppState>) -> Vec<DeviceInfo> {
 
 #[tauri::command]
 pub fn discover_devices(state: State<'_, SharedAppState>) -> Vec<DiscoveredDevice> {
-    let app = state.lock().unwrap();
-    app.discovered_devices.clone()
+    let (local_id, peer_port) = {
+        let app = state.lock().unwrap();
+        (app.local_device_id.clone(), app.settings.peer_port)
+    };
+
+    let mut discovered = Vec::new();
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        let _ = socket.set_broadcast(true);
+        let _ = socket.set_read_timeout(Some(std::time::Duration::from_millis(300)));
+
+        let msg = format!("FRIDAY_DISCOVERY_PING:{}", local_id);
+        let broadcast_addr = format!("255.255.255.255:{}", peer_port);
+        let _ = socket.send_to(msg.as_bytes(), &broadcast_addr);
+
+        let mut buf = [0u8; 512];
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(300) {
+            if let Ok((len, src)) = socket.recv_from(&mut buf) {
+                let text = String::from_utf8_lossy(&buf[..len]);
+                if text.starts_with("FRIDAY_NODE:") {
+                    let parts: Vec<&str> = text.split(':').collect();
+                    if parts.len() >= 6 && parts[1] != local_id {
+                        let id = parts[1].to_string();
+                        let name = parts[2].to_string();
+                        let os = parts[3].to_string();
+                        let arch = parts[4].to_string();
+                        let port = parts[5].parse::<u16>().unwrap_or(peer_port);
+                        let ip = src.ip().to_string();
+
+                        if !discovered.iter().any(|d: &DiscoveredDevice| d.id == id) {
+                            discovered.push(DiscoveredDevice {
+                                id,
+                                name,
+                                os,
+                                arch,
+                                ip_address: ip,
+                                port,
+                                is_paired: false,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut app = state.lock().unwrap();
+    app.discovered_devices = discovered.clone();
+    discovered
+}
+
+#[tauri::command]
+pub fn add_manual_device(
+    ip_address: String,
+    port: Option<u16>,
+    name: Option<String>,
+    state: State<'_, SharedAppState>,
+) -> Result<DeviceInfo, String> {
+    let port = port.unwrap_or(48700);
+    let ip = ip_address.trim().to_string();
+    if ip.is_empty() {
+        return Err("IP address cannot be empty".into());
+    }
+
+    let mut app = state.lock().unwrap();
+    let dev_name = name.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| format!("Laptop ({})", ip));
+    let dev_id = dev_name.replace(' ', "_");
+
+    if app.devices.iter().any(|d| d.ip_address == ip || d.id == dev_id) {
+        return Err(format!("Device with IP {} or ID {} already exists in known devices", ip, dev_id));
+    }
+
+    let new_device = DeviceInfo {
+        id: dev_id.clone(),
+        name: dev_name.clone(),
+        os: "Remote Machine".into(),
+        arch: "x64".into(),
+        ip_address: ip,
+        port,
+        is_local: false,
+        is_active: false,
+        is_connected: true,
+        latency_ms: 0.85,
+        capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
+    };
+
+    app.devices.push(new_device.clone());
+    app.topology.add_device(ScreenLayout {
+        device_id: dev_id.clone(),
+        name: dev_name.clone(),
+        bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+    });
+
+    app.add_log("INFO", "friday_network::pairing", &format!("Device {} added ({}) and connected to ring", dev_name, new_device.ip_address));
+    app.persist_config();
+    Ok(new_device)
 }
 
 #[tauri::command]
@@ -104,6 +198,7 @@ pub fn pair_device(device_id: String, state: State<'_, SharedAppState>) -> Resul
     });
 
     app.add_log("INFO", "friday_network::pairing", &format!("Device {} successfully paired and added to circular ring", discovered.name));
+    app.persist_config();
     Ok(new_device)
 }
 
@@ -124,8 +219,10 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
     }
 
     app.add_log("INFO", "friday_network::pairing", &format!("Device {} unpaired", device_id));
+    app.persist_config();
     Ok(())
 }
+
 
 #[tauri::command]
 pub fn connect_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
@@ -202,6 +299,7 @@ pub fn set_topology(ring: Vec<String>, state: State<'_, SharedAppState>) -> Resu
     }
 
     app.add_log("INFO", "friday_core::topology", &format!("Circular ring topology updated: {}", ring.join(" → ")));
+    app.persist_config();
     Ok(())
 }
 
@@ -220,6 +318,7 @@ pub fn add_ring_device(device_id: String, state: State<'_, SharedAppState>) -> R
         app.topology.ring.push(device_id.clone());
     }
     app.add_log("INFO", "friday_core::topology", &format!("Added {} to circular ring", device_id));
+    app.persist_config();
     Ok(())
 }
 
@@ -236,6 +335,7 @@ pub fn remove_ring_device(device_id: String, state: State<'_, SharedAppState>) -
         app.topology.set_active_device(&local_id);
     }
     app.add_log("INFO", "friday_core::topology", &format!("Removed {} from circular ring", device_id));
+    app.persist_config();
     Ok(())
 }
 

@@ -128,6 +128,16 @@ export const App: React.FC = () => {
     setStatus(nextStatus);
   };
 
+  const handleManualAddDevice = async (ip: string, port?: number, name?: string) => {
+    try {
+      await api.addManualDevice(ip, port, name);
+      refreshAllData();
+    } catch (e) {
+      console.error("Failed to add device:", e);
+      alert(`Failed to add device: ${e}`);
+    }
+  };
+
   const handlePairDevice = async (deviceId: string) => {
     await api.pairDevice(deviceId);
     refreshAllData();
@@ -211,6 +221,7 @@ export const App: React.FC = () => {
             discovered={discovered}
             activeDeviceId={status?.active_device_id || ""}
             onPairDevice={handlePairDevice}
+            onAddManualDevice={handleManualAddDevice}
             onUnpairDevice={handleUnpairDevice}
             onConnectDevice={handleConnectDevice}
             onDisconnectDevice={handleDisconnectDevice}

@@ -18,6 +18,7 @@ interface DevicesProps {
   discovered: DiscoveredDevice[];
   activeDeviceId: string;
   onPairDevice: (deviceId: string) => void;
+  onAddManualDevice: (ip: string, port?: number, name?: string) => void;
   onUnpairDevice: (deviceId: string) => void;
   onConnectDevice: (deviceId: string) => void;
   onDisconnectDevice: (deviceId: string) => void;
@@ -30,6 +31,7 @@ export const Devices: React.FC<DevicesProps> = ({
   discovered,
   activeDeviceId,
   onPairDevice,
+  onAddManualDevice,
   onUnpairDevice,
   onConnectDevice,
   onDisconnectDevice,
@@ -39,6 +41,10 @@ export const Devices: React.FC<DevicesProps> = ({
   const [pairingModalDev, setPairingModalDev] = useState<DiscoveredDevice | null>(null);
   const [pairCode, setPairCode] = useState("");
   const [isPairingLoading, setIsPairingLoading] = useState(false);
+  const [manualIp, setManualIp] = useState("");
+  const [manualName, setManualName] = useState("");
+  const [manualPort, setManualPort] = useState("48700");
+
 
   const startPairingFlow = (dev: DiscoveredDevice) => {
     setPairingModalDev(dev);
@@ -209,6 +215,106 @@ export const Devices: React.FC<DevicesProps> = ({
             );
           })}
         </div>
+      </div>
+
+      {/* Add Device by Direct IP / Tailscale */}
+      <div className="card">
+        <div className="card-header">
+          <div>
+            <h2 className="card-title">
+              <Plus size={16} color="#06b6d4" />
+              Add Remote Device (IP / Tailscale)
+            </h2>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+              Directly connect to another laptop across your local network or Tailscale mesh IP
+            </p>
+          </div>
+        </div>
+
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (manualIp.trim()) {
+              onAddManualDevice(manualIp.trim(), parseInt(manualPort) || 48700, manualName.trim() || undefined);
+              setManualIp("");
+              setManualName("");
+            }
+          }}
+          style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" }}
+        >
+          <div style={{ flex: "1 1 200px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>
+              IP Address / Host
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. 192.168.1.2 or 100.94.85.40"
+              value={manualIp}
+              onChange={(e) => setManualIp(e.target.value)}
+              className="input"
+              style={{
+                width: "100%",
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-sm)",
+                padding: "8px 12px",
+                color: "var(--text-primary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "13px",
+              }}
+              required
+            />
+          </div>
+
+          <div style={{ flex: "1 1 160px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>
+              Device Name (Optional)
+            </label>
+            <input
+              type="text"
+              placeholder="e.g. Lenovo Yoga"
+              value={manualName}
+              onChange={(e) => setManualName(e.target.value)}
+              className="input"
+              style={{
+                width: "100%",
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-sm)",
+                padding: "8px 12px",
+                color: "var(--text-primary)",
+                fontSize: "13px",
+              }}
+            />
+          </div>
+
+          <div style={{ width: "90px" }}>
+            <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>
+              Port
+            </label>
+            <input
+              type="number"
+              value={manualPort}
+              onChange={(e) => setManualPort(e.target.value)}
+              className="input"
+              style={{
+                width: "100%",
+                background: "var(--bg-secondary)",
+                border: "1px solid var(--border-subtle)",
+                borderRadius: "var(--radius-sm)",
+                padding: "8px 12px",
+                color: "var(--text-primary)",
+                fontFamily: "var(--font-mono)",
+                fontSize: "13px",
+              }}
+            />
+          </div>
+
+          <button type="submit" className="btn btn-primary" style={{ height: "38px" }}>
+            <Plus size={14} />
+            <span>Connect Device</span>
+          </button>
+        </form>
       </div>
 
       {/* Discovered Nearby Devices Section */}

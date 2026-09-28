@@ -1,6 +1,27 @@
 use std::fs;
 use std::path::PathBuf;
-use crate::types::SettingsDto;
+use serde::{Deserialize, Serialize};
+use crate::types::{DeviceInfo, SettingsDto};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    #[serde(default)]
+    pub settings: SettingsDto,
+    #[serde(default)]
+    pub paired_devices: Vec<DeviceInfo>,
+    #[serde(default)]
+    pub ring_topology: Vec<String>,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            settings: SettingsDto::default(),
+            paired_devices: Vec::new(),
+            ring_topology: Vec::new(),
+        }
+    }
+}
 
 pub struct ConfigManager;
 
@@ -14,24 +35,43 @@ impl ConfigManager {
         dir.join("config.json")
     }
 
-    pub fn load() -> SettingsDto {
+    pub fn load_config() -> AppConfig {
         let path = Self::config_path();
         if path.exists() {
             if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(config) = serde_json::from_str::<AppConfig>(&content) {
+                    return config;
+                }
+                // Backwards-compatible load if older file contained only SettingsDto
                 if let Ok(settings) = serde_json::from_str::<SettingsDto>(&content) {
-                    return settings;
+                    return AppConfig {
+                        settings,
+                        paired_devices: Vec::new(),
+                        ring_topology: Vec::new(),
+                    };
                 }
             }
         }
-        SettingsDto::default()
+        AppConfig::default()
     }
 
-    pub fn save(settings: &SettingsDto) -> Result<(), String> {
+    pub fn save_config(config: &AppConfig) -> Result<(), String> {
         let path = Self::config_path();
-        let json = serde_json::to_string_pretty(settings)
-            .map_err(|e| format!("Failed to serialize settings: {}", e))?;
+        let json = serde_json::to_string_pretty(config)
+            .map_err(|e| format!("Failed to serialize config: {}", e))?;
         fs::write(&path, json)
             .map_err(|e| format!("Failed to write config file to {:?}: {}", path, e))?;
         Ok(())
     }
+
+    pub fn load() -> SettingsDto {
+        Self::load_config().settings
+    }
+
+    pub fn save(settings: &SettingsDto) -> Result<(), String> {
+        let mut config = Self::load_config();
+        config.settings = settings.clone();
+        Self::save_config(&config)
+    }
 }
+

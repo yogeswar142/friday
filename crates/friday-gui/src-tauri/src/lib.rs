@@ -21,6 +21,7 @@ pub fn run() {
             commands::switch_active_device,
             commands::get_devices,
             commands::discover_devices,
+            commands::add_manual_device,
             commands::pair_device,
             commands::unpair_device,
             commands::connect_device,

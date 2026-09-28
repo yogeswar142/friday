@@ -31,16 +31,19 @@ async function invokeTauri<T>(cmd: string, args?: Record<string, unknown>): Prom
 }
 
 // Fallback state for dev / browser previews
+const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "";
+const detectedOs = userAgent.includes("Windows") ? "Windows 11" : userAgent.includes("Mac") ? "macOS" : "Linux";
+const detectedHost = "Host-Machine";
 let mockEngineRunning = true;
-let mockActiveDevice = "G50";
-let mockRing = ["G50", "Yoga", "MacBook"];
+let mockActiveDevice = detectedHost;
+let mockRing = [detectedHost];
 let mockDevices: DeviceInfo[] = [
   {
-    id: "G50",
-    name: "Lenovo G50 (Local)",
-    os: "Linux",
+    id: detectedHost,
+    name: `${detectedHost} (This Machine)`,
+    os: detectedOs,
     arch: "x64",
-    ip_address: "192.168.1.11",
+    ip_address: "127.0.0.1",
     port: 48700,
     is_local: true,
     is_active: true,
@@ -48,45 +51,10 @@ let mockDevices: DeviceInfo[] = [
     latency_ms: 0.0,
     capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
   },
-  {
-    id: "Yoga",
-    name: "Lenovo Yoga",
-    os: "Windows 11",
-    arch: "x64",
-    ip_address: "192.168.1.2",
-    port: 48700,
-    is_local: false,
-    is_active: false,
-    is_connected: true,
-    latency_ms: 0.72,
-    capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
-  },
-  {
-    id: "MacBook",
-    name: "MacBook Air",
-    os: "macOS Sonoma",
-    arch: "arm64",
-    ip_address: "192.168.1.45",
-    port: 48700,
-    is_local: false,
-    is_active: false,
-    is_connected: true,
-    latency_ms: 1.15,
-    capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
-  },
 ];
 
-let mockDiscovered: DiscoveredDevice[] = [
-  {
-    id: "ThinkPad",
-    name: "ThinkPad X1",
-    os: "Linux Fedora",
-    arch: "x64",
-    ip_address: "192.168.1.88",
-    port: 48700,
-    is_paired: false,
-  },
-];
+let mockDiscovered: DiscoveredDevice[] = [];
+
 
 let mockSettings: SettingsDto = {
   edge_dwell_ms: 500,
@@ -297,12 +265,35 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
         permission_instructions: undefined,
       } as unknown as T;
 
+    case "add_manual_device": {
+      const ip = (args?.ip_address as string) || "192.168.1.2";
+      const name = (args?.name as string) || `Laptop (${ip})`;
+      const port = (args?.port as number) || 48700;
+      const id = name.replace(/\s+/g, "_");
+      const newDev: DeviceInfo = {
+        id,
+        name,
+        os: "Remote Machine",
+        arch: "x64",
+        ip_address: ip,
+        port,
+        is_local: false,
+        is_active: false,
+        is_connected: true,
+        latency_ms: 0.85,
+        capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
+      };
+      mockDevices.push(newDev);
+      if (!mockRing.includes(id)) {
+        mockRing.push(id);
+      }
+      return newDev as unknown as T;
+    }
+
     case "get_logs":
       return [
         { timestamp: "17:15:00", level: "INFO", target: "friday_core::engine", message: "FRIDAY Core Control Plane initialized with Circular N-Device Routing" },
-        { timestamp: "17:15:01", level: "INFO", target: "friday_core::topology", message: "Circular ring topology established: G50 → Yoga → MacBook → G50" },
-        { timestamp: "17:15:05", level: "INFO", target: "friday_network::transport", message: "UDP Transport bound on 0.0.0.0:48700" },
-        { timestamp: "17:15:10", level: "INFO", target: "friday_core::ownership", message: "Exclusive ownership router active — G50 owns physical mouse" },
+        { timestamp: "17:15:05", level: "INFO", target: "friday_network::transport", message: "UDP Transport listening on 0.0.0.0:48700" },
       ] as unknown as T;
 
     default:
@@ -320,6 +311,8 @@ export const api = {
   switchActiveDevice: (device_id: string) => invokeTauri<void>("switch_active_device", { device_id }),
   getDevices: () => invokeTauri<DeviceInfo[]>("get_devices"),
   discoverDevices: () => invokeTauri<DiscoveredDevice[]>("discover_devices"),
+  addManualDevice: (ip_address: string, port?: number, name?: string) =>
+    invokeTauri<DeviceInfo>("add_manual_device", { ip_address, port, name }),
   pairDevice: (device_id: string) => invokeTauri<DeviceInfo>("pair_device", { device_id }),
   unpairDevice: (device_id: string) => invokeTauri<void>("unpair_device", { device_id }),
   connectDevice: (device_id: string) => invokeTauri<void>("connect_device", { device_id }),
