@@ -184,6 +184,30 @@ async fn run_receiver(bind_addr: &str) -> Result<(), Box<dyn std::error::Error>>
         receiver_loop(transport_clone, session_clone).await;
     });
 
+    // Spawn discovery responder so FRIDAY GUI immediately auto-discovers this agent
+    tokio::spawn(async move {
+        if let Ok(disc_socket) = std::net::UdpSocket::bind("0.0.0.0:48701") {
+            let _ = disc_socket.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+            let mut buf = [0u8; 512];
+            let host = std::env::var("COMPUTERNAME")
+                .or_else(|_| std::env::var("HOSTNAME"))
+                .unwrap_or_else(|_| "FRIDAY-Agent".into());
+            let os = std::env::consts::OS;
+            let arch = std::env::consts::ARCH;
+
+            loop {
+                if let Ok((len, src)) = disc_socket.recv_from(&mut buf) {
+                    let msg = String::from_utf8_lossy(&buf[..len]);
+                    if msg.starts_with("FRIDAY_DISCOVERY_PING:") {
+                        let resp = format!("FRIDAY_NODE:{}:{}:{}:{}:48700", host, host, os, arch);
+                        let _ = disc_socket.send_to(resp.as_bytes(), src);
+                    }
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+            }
+        }
+    });
+
     println!("✓ FRIDAY Receiver ready on {}", local_addr);
     println!("  Waiting for sender to connect...");
     println!("  Press Ctrl+C to stop.");

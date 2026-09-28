@@ -1,14 +1,20 @@
 pub mod commands;
 pub mod config;
 pub mod diagnostics;
+pub mod discovery;
 pub mod state;
 pub mod types;
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use state::AppState;
 
 pub fn run() {
     let shared_state = Arc::new(Mutex::new(AppState::new()));
+    let stop_flag = Arc::new(AtomicBool::new(false));
+
+    // Launch background UDP discovery service
+    discovery::start_discovery_service(shared_state.clone(), stop_flag);
 
     tauri::Builder::default()
         .manage(shared_state)

@@ -71,56 +71,9 @@ pub fn get_devices(state: State<'_, SharedAppState>) -> Vec<DeviceInfo> {
 
 #[tauri::command]
 pub fn discover_devices(state: State<'_, SharedAppState>) -> Vec<DiscoveredDevice> {
-    let (local_id, peer_port) = {
-        let app = state.lock().unwrap();
-        (app.local_device_id.clone(), app.settings.peer_port)
-    };
-
-    let mut discovered = Vec::new();
-    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
-        let _ = socket.set_broadcast(true);
-        let _ = socket.set_read_timeout(Some(std::time::Duration::from_millis(300)));
-
-        let msg = format!("FRIDAY_DISCOVERY_PING:{}", local_id);
-        let broadcast_addr = format!("255.255.255.255:{}", peer_port);
-        let _ = socket.send_to(msg.as_bytes(), &broadcast_addr);
-
-        let mut buf = [0u8; 512];
-        let start = std::time::Instant::now();
-        while start.elapsed() < std::time::Duration::from_millis(300) {
-            if let Ok((len, src)) = socket.recv_from(&mut buf) {
-                let text = String::from_utf8_lossy(&buf[..len]);
-                if text.starts_with("FRIDAY_NODE:") {
-                    let parts: Vec<&str> = text.split(':').collect();
-                    if parts.len() >= 6 && parts[1] != local_id {
-                        let id = parts[1].to_string();
-                        let name = parts[2].to_string();
-                        let os = parts[3].to_string();
-                        let arch = parts[4].to_string();
-                        let port = parts[5].parse::<u16>().unwrap_or(peer_port);
-                        let ip = src.ip().to_string();
-
-                        if !discovered.iter().any(|d: &DiscoveredDevice| d.id == id) {
-                            discovered.push(DiscoveredDevice {
-                                id,
-                                name,
-                                os,
-                                arch,
-                                ip_address: ip,
-                                port,
-                                is_paired: false,
-                            });
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    let mut app = state.lock().unwrap();
-    app.discovered_devices = discovered.clone();
-    discovered
+    crate::discovery::scan_local_subnet(state.inner().clone())
 }
+
 
 #[tauri::command]
 pub fn add_manual_device(
