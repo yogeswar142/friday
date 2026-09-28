@@ -33,8 +33,6 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_PORT: u16 = 48700;
-
 #[derive(Parser)]
 #[command(name = "friday-agent")]
 #[command(about = "FRIDAY Phase 1.5 — Real Mouse Sharing Agent")]
