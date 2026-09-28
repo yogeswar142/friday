@@ -1,2 +1,6 @@
 [target.x86_64-pc-windows-gnu]
 linker = "x86_64-w64-mingw32-gcc"
+
+[env]
+PKG_CONFIG_PATH = { value = "/home/yogeswar/.local/opt/webkit-dev/usr/lib/x86_64-linux-gnu/pkgconfig", relative = false }
+LIBRARY_PATH = { value = "/home/yogeswar/.local/opt/webkit-dev/usr/lib/x86_64-linux-gnu", relative = false }
