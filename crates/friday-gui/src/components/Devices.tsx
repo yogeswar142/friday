@@ -216,7 +216,7 @@ export const Devices: React.FC<DevicesProps> = ({
                   </div>
 
                   {isActive ? (
-                    <span className="device-badge badge-active">ACTIVE OWNER</span>
+                    <span className="device-badge badge-active">ACTIVE CURSOR</span>
                   ) : (
                     <span
                       style={{
@@ -257,8 +257,8 @@ export const Devices: React.FC<DevicesProps> = ({
                     </span>
                   </div>
                   <div>
-                    <span style={{ color: "var(--text-muted)" }}>TYPE: </span>
-                    <span>{d.is_local ? "Host Machine" : "Remote Peer"}</span>
+                    <span style={{ color: "var(--text-muted)" }}>SOURCE: </span>
+                    <span>{d.is_local ? "Physical Mouse (Local)" : "Remote Peer"}</span>
                   </div>
                   <div>
                     <span style={{ color: "var(--text-muted)" }}>CAPS: </span>

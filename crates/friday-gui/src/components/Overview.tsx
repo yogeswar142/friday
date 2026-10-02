@@ -104,15 +104,16 @@ export const Overview: React.FC<OverviewProps> = ({
           <div className="card-header">
             <span className="card-title">
               <Laptop size={16} color="#10b981" />
-              Active Device
+              Active Cursor Owner
             </span>
             <span className="device-badge badge-active">Exclusive</span>
           </div>
           <div className="metric-value">{status?.active_device_id || "None"}</div>
           <div className="metric-sub">
+            Physical Mouse: <strong style={{ color: "var(--text-primary)" }}>{status?.local_device_id}</strong>
             {status?.active_device_id === status?.local_device_id
-              ? "Local machine owns physical mouse"
-              : "Remote machine receives all inputs"}
+              ? " (Local focus)"
+              : " (Streaming to remote)"}
           </div>
         </div>
 

@@ -11,6 +11,7 @@ import {
   Sun,
   Moon,
   Laptop,
+  Mouse,
 } from "lucide-react";
 import { EngineStatus, TabType } from "../types";
 
@@ -107,9 +108,31 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span>{status.state.toUpperCase()}</span>
             </div>
 
-            <div className="device-badge badge-active" title="Device currently controlling the physical mouse">
-              <Laptop size={12} />
-              <span>OWNER: {status.active_device_id}</span>
+            <div
+              style={{
+                display: "flex",
+                gap: "8px",
+                alignItems: "center",
+                fontSize: "11px",
+                fontFamily: "var(--font-mono)",
+                background: "var(--bg-secondary)",
+                padding: "3px 10px",
+                borderRadius: "var(--radius-sm)",
+                border: "1px solid var(--border-subtle)",
+              }}
+              title="Physical Mouse Source & Active Cursor Owner"
+            >
+              <span style={{ color: "var(--text-muted)", display: "flex", alignItems: "center", gap: "4px" }}>
+                <Mouse size={12} color="#06b6d4" />
+                <span>PHYSICAL MOUSE:</span>
+                <strong style={{ color: "var(--text-primary)" }}>{status.local_device_id}</strong>
+              </span>
+              <span style={{ color: "var(--border-subtle)" }}>|</span>
+              <span style={{ color: "var(--accent-emerald)", display: "flex", alignItems: "center", gap: "4px" }}>
+                <Laptop size={12} color="#10b981" />
+                <span>ACTIVE CURSOR:</span>
+                <strong>{status.active_device_id}</strong>
+              </span>
             </div>
           </>
         )}
