@@ -103,6 +103,8 @@ pub fn switch_active_device(
         &format!("Ownership manually switched to {}", target_id),
     );
     app.persist_config();
+    drop(app);
+    crate::engine::notify_active_device_changed(&state, &target_id);
     Ok(())
 }
 
@@ -256,8 +258,12 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
         (device_id.clone(), device_id.clone())
     };
 
-    app.devices
-        .retain(|d| d.id != target_id && d.ip_address != target_id && d.id != device_id && d.ip_address != device_id);
+    app.devices.retain(|d| {
+        d.id != target_id
+            && d.ip_address != target_id
+            && d.id != device_id
+            && d.ip_address != device_id
+    });
     app.topology.remove_device(&target_id);
     app.topology.remove_device(&device_id);
 
@@ -265,6 +271,27 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
         let local_id = app.local_device_id.clone();
         app.active_device_id = local_id.clone();
         app.topology.set_active_device(&local_id);
+    }
+
+    let target_ip = dev
+        .as_ref()
+        .map(|d| d.ip_address.clone())
+        .unwrap_or_else(|| {
+            if device_id.parse::<std::net::IpAddr>().is_ok() {
+                device_id.clone()
+            } else {
+                String::new()
+            }
+        });
+
+    if !target_ip.is_empty() {
+        let dest = format!("{}:{}", target_ip, crate::pairing::PAIR_REQUEST_PORT);
+        let msg = format!("FRIDAY_UNPAIR:{}", app.local_device_id);
+        if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+            for _ in 0..3 {
+                let _ = socket.send_to(msg.as_bytes(), &dest);
+            }
+        }
     }
 
     app.add_log(
@@ -292,6 +319,8 @@ pub fn connect_device(device_id: String, state: State<'_, SharedAppState>) -> Re
             &format!("Connected to {}", name),
         );
         app.persist_config();
+        drop(app);
+        crate::engine::notify_device_connected(&state, &device_id);
         Ok(())
     } else {
         Err(format!("Device {} not found", device_id))
@@ -325,6 +354,8 @@ pub fn disconnect_device(
             &format!("Disconnected from {}", id),
         );
         app.persist_config();
+        drop(app);
+        crate::engine::notify_device_disconnected(&state, &id);
         Ok(())
     } else {
         Err(format!("Device {} not found", device_id))

@@ -395,6 +395,11 @@ async fn handle_control_message(
             // Update liveness timestamp (already done above via last_packet_time)
         }
 
+        ControlMessage::TakeControl => {
+            info!("Peer requested TakeControl — switching to Receiver mode.");
+            session.set_mode(SessionMode::Receiver).await;
+        }
+
         ControlMessage::Goodbye => {
             info!("Peer disconnected gracefully.");
             handle_disconnect(transport, session).await;

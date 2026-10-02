@@ -1011,6 +1011,7 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "dirs 6.0.0",
+ "friday-agent",
  "friday-core",
  "friday-network",
  "friday-platform",
@@ -1021,6 +1022,8 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows 0.58.0",
+ "x11",
 ]
 
 [[package]]

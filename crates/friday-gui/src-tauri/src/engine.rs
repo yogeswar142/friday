@@ -1,0 +1,903 @@
+/// FRIDAY Mouse Topology & Input Sharing Engine
+///
+/// Handles real-time UDP input reception, OS input injection,
+/// cursor edge detection against circular topology, and handoff between machines.
+use std::net::{SocketAddr, UdpSocket};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
+use tracing::{debug, info, warn};
+
+use friday_agent::control::ControlMessage;
+use friday_core::{
+    CircularTopology, Edge, ElementState, InputEvent, MouseButton, MouseEvent, NormalizedPoint,
+};
+use friday_network::{NetworkPacket, PacketPayload};
+
+use crate::state::SharedAppState;
+
+static IS_CONTROLLING_REMOTE: AtomicBool = AtomicBool::new(false);
+static HOOK_EVENT_TX: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::new();
+static LAST_HOOK_X: AtomicI32 = AtomicI32::new(0);
+static LAST_HOOK_Y: AtomicI32 = AtomicI32::new(0);
+static HAS_LAST_HOOK_PT: AtomicBool = AtomicBool::new(false);
+
+#[cfg(target_os = "windows")]
+use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE};
+#[cfg(target_os = "windows")]
+use windows::Win32::UI::WindowsAndMessaging::{
+    CallNextHookEx, DispatchMessageW, GetCursorPos, GetSystemMetrics, PeekMessageW, SetCursorPos,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, MSG, MSLLHOOKSTRUCT, PM_REMOVE,
+    SM_CXSCREEN, SM_CYSCREEN, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
+    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+};
+
+// ── Native platform cursor & screen helpers ──────────────────────────────────
+
+pub fn get_screen_dimensions() -> (i32, i32) {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: Querying standard system metrics for virtual or primary desktop width & height
+        let w = unsafe { GetSystemMetrics(SM_CXSCREEN) };
+        let h = unsafe { GetSystemMetrics(SM_CYSCREEN) };
+        if w > 0 && h > 0 {
+            return (w, h);
+        }
+        (1920, 1080)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        friday_agent::platform::linux::query_display_info()
+            .map(|d| (d.width as i32, d.height as i32))
+            .unwrap_or((1920, 1080))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        (1920, 1080)
+    }
+}
+
+pub fn get_local_cursor_pos() -> Option<(i32, i32)> {
+    #[cfg(target_os = "windows")]
+    {
+        let mut pt = POINT { x: 0, y: 0 };
+        // SAFETY: pt is stack-allocated and valid for GetCursorPos
+        if unsafe { GetCursorPos(&mut pt) }.is_ok() {
+            Some((pt.x, pt.y))
+        } else {
+            None
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        friday_agent::platform::linux::get_cursor_position().ok()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+pub fn set_local_cursor_pos(x: i32, y: i32) {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: SetCursorPos is safe with integer screen coordinates
+        unsafe {
+            let _ = SetCursorPos(x, y);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = friday_agent::platform::linux::inject_move_abs(x, y);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = (x, y);
+    }
+}
+
+pub fn inject_os_event(event: &InputEvent) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = friday_agent::platform::windows::inject_event(event);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = friday_agent::platform::linux::inject_event(event);
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = event;
+    }
+}
+
+// ── Windows Low-Level Mouse Hook ──────────────────────────────────────────────
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn low_level_mouse_proc(
+    n_code: i32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    if n_code >= 0 {
+        // Emergency escape: check if Escape key is pressed while controlling remote
+        if GetAsyncKeyState(VK_ESCAPE.0 as i32) < 0 {
+            IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+            return CallNextHookEx(None, n_code, w_param, l_param);
+        }
+
+        if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+            let msg = w_param.0 as u32;
+            let info = *(l_param.0 as *const MSLLHOOKSTRUCT);
+
+            match msg {
+                WM_MOUSEMOVE => {
+                    if !HAS_LAST_HOOK_PT.swap(true, Ordering::SeqCst) {
+                        LAST_HOOK_X.store(info.pt.x, Ordering::Relaxed);
+                        LAST_HOOK_Y.store(info.pt.y, Ordering::Relaxed);
+                    } else {
+                        let prev_x = LAST_HOOK_X.swap(info.pt.x, Ordering::Relaxed);
+                        let prev_y = LAST_HOOK_Y.swap(info.pt.y, Ordering::Relaxed);
+                        let dx = info.pt.x - prev_x;
+                        let dy = info.pt.y - prev_y;
+
+                        if dx != 0 || dy != 0 {
+                            if let Some(tx) = HOOK_EVENT_TX.get() {
+                                let _ = tx.send(InputEvent::Mouse(MouseEvent::MoveRel {
+                                    dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                    dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                    timestamp: 0,
+                                }));
+                            }
+                        }
+                    }
+                    // Consume the movement so the local cursor stays stationary
+                    return LRESULT(1);
+                }
+                WM_LBUTTONDOWN => {
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Left,
+                            state: ElementState::Pressed,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_LBUTTONUP => {
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Left,
+                            state: ElementState::Released,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_RBUTTONDOWN => {
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Right,
+                            state: ElementState::Pressed,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_RBUTTONUP => {
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Right,
+                            state: ElementState::Released,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_MBUTTONDOWN => {
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Middle,
+                            state: ElementState::Pressed,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_MBUTTONUP => {
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Middle,
+                            state: ElementState::Released,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_MOUSEWHEEL => {
+                    let delta = ((info.mouseData >> 16) as i16) / 120;
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Scroll {
+                            dx: 0,
+                            dy: delta,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                WM_MOUSEHWHEEL => {
+                    let delta = ((info.mouseData >> 16) as i16) / 120;
+                    if let Some(tx) = HOOK_EVENT_TX.get() {
+                        let _ = tx.send(InputEvent::Mouse(MouseEvent::Scroll {
+                            dx: delta,
+                            dy: 0,
+                            timestamp: 0,
+                        }));
+                    }
+                    return LRESULT(1);
+                }
+                _ => {}
+            }
+        }
+    }
+    CallNextHookEx(None, n_code, w_param, l_param)
+}
+
+#[cfg(target_os = "windows")]
+fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
+    // SAFETY: Low-level mouse hook on dedicated worker thread
+    let hook = unsafe {
+        SetWindowsHookExW(
+            WH_MOUSE_LL,
+            Some(low_level_mouse_proc),
+            HINSTANCE(std::ptr::null_mut()),
+            0,
+        )
+    };
+
+    if let Ok(h) = hook {
+        info!("Windows WH_MOUSE_LL hook successfully installed");
+        let mut msg = MSG::default();
+        while !stop_flag.load(Ordering::Relaxed) {
+            // SAFETY: Pumping messages to keep Windows hook dispatching
+            unsafe {
+                if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                } else {
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        // SAFETY: Cleanup hook upon thread exit
+        unsafe {
+            let _ = UnhookWindowsHookEx(h);
+        }
+        info!("Windows WH_MOUSE_LL hook uninstalled");
+    } else {
+        warn!("Failed to install Windows WH_MOUSE_LL hook — will use cursor trapping fallback");
+    }
+}
+
+// ── Background Engine Service ──────────────────────────────────────────────────
+
+pub fn start_engine_service(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) {
+    let (event_tx, event_rx) = std::sync::mpsc::channel::<InputEvent>();
+    let _ = HOOK_EVENT_TX.set(event_tx);
+
+    // 1. Windows low-level hook thread
+    #[cfg(target_os = "windows")]
+    {
+        let stop_clone = stop_flag.clone();
+        std::thread::spawn(move || {
+            run_windows_hook_thread(stop_clone);
+        });
+    }
+
+    // 2. UDP Input & Control Receiver Thread
+    let state_recv = shared_state.clone();
+    let stop_recv = stop_flag.clone();
+    std::thread::spawn(move || {
+        run_input_receiver(state_recv, stop_recv);
+    });
+
+    // 3. Mouse Tracking & Edge Routing Loop
+    let state_track = shared_state.clone();
+    let stop_track = stop_flag.clone();
+    std::thread::spawn(move || {
+        run_mouse_router(state_track, stop_track, event_rx);
+    });
+}
+
+// ── UDP Input & Control Receiver ───────────────────────────────────────────────
+
+fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) {
+    let port = {
+        let app = shared_state.lock().unwrap();
+        app.settings.peer_port
+    };
+
+    let socket = match UdpSocket::bind(format!("0.0.0.0:{}", port)) {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to bind input receiver on port {}: {}", port, e);
+            return;
+        }
+    };
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .ok();
+
+    info!("FRIDAY Input Receiver listening on UDP port {}", port);
+
+    let mut buf = [0u8; 1024];
+    let mut last_second = Instant::now();
+    let mut packets_this_sec = 0u64;
+    let mut bytes_this_sec = 0u64;
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        match socket.recv_from(&mut buf) {
+            Ok((len, src)) => {
+                packets_this_sec += 1;
+                bytes_this_sec += len as u64;
+
+                if let Ok(packet) = NetworkPacket::decode(&buf[..len]) {
+                    match packet.payload {
+                        PacketPayload::Input(event) => {
+                            // Only inject into OS if we are NOT currently controlling remote
+                            if !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+                                inject_os_event(&event);
+                            }
+                        }
+                        PacketPayload::Control(bytes) => {
+                            handle_incoming_control(bytes, src, &shared_state, &socket);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Err(_) => {
+                // Timeout — normal for non-blocking recv
+            }
+        }
+
+        // Update telemetry rates every second
+        if last_second.elapsed() >= Duration::from_secs(1) {
+            if let Ok(mut app) = shared_state.lock() {
+                app.telemetry.packets_per_sec = packets_this_sec as u32;
+                app.telemetry.bytes_per_sec = bytes_this_sec as u32;
+            }
+            packets_this_sec = 0;
+            bytes_this_sec = 0;
+            last_second = Instant::now();
+        }
+    }
+}
+
+fn handle_incoming_control(
+    bytes: Vec<u8>,
+    src: SocketAddr,
+    shared_state: &SharedAppState,
+    socket: &UdpSocket,
+) {
+    if let Ok(msg) = ControlMessage::decode(&bytes) {
+        match msg {
+            ControlMessage::HandoffControl {
+                entry_x_norm,
+                entry_y_norm,
+            } => {
+                // Remote transferred control to this machine!
+                info!(
+                    "Control handed off to this machine at ({:.3}, {:.3}) from {}",
+                    entry_x_norm, entry_y_norm, src
+                );
+                IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+
+                let (screen_w, screen_h) = get_screen_dimensions();
+                let target_x =
+                    ((entry_x_norm * (screen_w - 1) as f32).round() as i32).clamp(0, screen_w - 1);
+                let target_y =
+                    ((entry_y_norm * (screen_h - 1) as f32).round() as i32).clamp(0, screen_h - 1);
+
+                set_local_cursor_pos(target_x, target_y);
+
+                if let Ok(mut app) = shared_state.lock() {
+                    let local_id = app.local_device_id.clone();
+                    app.active_device_id = local_id.clone();
+                    app.topology.set_active_device(&local_id);
+                    for d in &mut app.devices {
+                        d.is_active = d.id == local_id;
+                    }
+                    app.add_log(
+                        "INFO",
+                        "friday_core::ownership",
+                        &format!(
+                            "Control received from {} — cursor placed at ({}, {})",
+                            src, target_x, target_y
+                        ),
+                    );
+                    app.persist_config();
+                }
+            }
+            ControlMessage::TakeControl => {
+                // Remote is claiming control
+                info!("Remote {} claimed TakeControl", src);
+                if let Ok(mut app) = shared_state.lock() {
+                    let remote_dev = app
+                        .devices
+                        .iter()
+                        .find(|d| d.ip_address == src.ip().to_string())
+                        .cloned();
+                    if let Some(r) = remote_dev {
+                        app.active_device_id = r.id.clone();
+                        app.topology.set_active_device(&r.id);
+                        for d in &mut app.devices {
+                            d.is_active = d.id == r.id;
+                        }
+                    }
+                }
+            }
+            ControlMessage::ReleaseAll => {
+                debug!("Received ReleaseAll from {}", src);
+                // Inject mouse release if needed
+            }
+            ControlMessage::Ping { seq } => {
+                let pong = ControlMessage::Pong { seq };
+                if let Ok(pong_bytes) = pong.encode() {
+                    let packet = NetworkPacket::new_control(pong_bytes);
+                    if let Ok(enc) = packet.encode() {
+                        let _ = socket.send_to(&enc, src);
+                    }
+                }
+            }
+            ControlMessage::Pong { seq: _ } => {
+                // Heartbeat reply received
+            }
+            ControlMessage::Hello {
+                device_name,
+                screen: _,
+            } => {
+                info!("Hello received from {} ({})", device_name, src);
+                if let Ok(mut app) = shared_state.lock() {
+                    if let Some(dev) = app
+                        .devices
+                        .iter_mut()
+                        .find(|d| d.ip_address == src.ip().to_string())
+                    {
+                        dev.is_connected = true;
+                    }
+                }
+                let (w, h) = get_screen_dimensions();
+                let welcome = ControlMessage::Welcome {
+                    device_name: crate::state::detect_local_hostname(),
+                    screen: friday_agent::control::ScreenInfo {
+                        width: w as u32,
+                        height: h as u32,
+                        scale_factor: 1.0,
+                        device_name: crate::state::detect_local_hostname(),
+                    },
+                };
+                if let Ok(bytes) = welcome.encode() {
+                    let packet = NetworkPacket::new_control(bytes);
+                    if let Ok(enc) = packet.encode() {
+                        let _ = socket.send_to(&enc, src);
+                    }
+                }
+            }
+            ControlMessage::Welcome {
+                device_name,
+                screen: _,
+            } => {
+                info!(
+                    "Welcome received from {} ({}) — link active",
+                    device_name, src
+                );
+                if let Ok(mut app) = shared_state.lock() {
+                    if let Some(dev) = app
+                        .devices
+                        .iter_mut()
+                        .find(|d| d.ip_address == src.ip().to_string())
+                    {
+                        dev.is_connected = true;
+                    }
+                }
+            }
+            ControlMessage::Goodbye => {
+                info!("Goodbye received from {}", src);
+                if let Ok(mut app) = shared_state.lock() {
+                    if let Some(dev) = app
+                        .devices
+                        .iter_mut()
+                        .find(|d| d.ip_address == src.ip().to_string())
+                    {
+                        dev.is_connected = false;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+// ── Mouse Tracking & Circular Edge Routing ─────────────────────────────────────
+
+fn run_mouse_router(
+    shared_state: SharedAppState,
+    stop_flag: Arc<AtomicBool>,
+    event_rx: std::sync::mpsc::Receiver<InputEvent>,
+) {
+    let send_socket = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to bind mouse router outgoing UDP socket: {}", e);
+            return;
+        }
+    };
+
+    let mut dwell_start: Option<(Edge, Instant)> = None;
+    let mut return_dwell_start: Option<(Edge, Instant)> = None;
+
+    // Remote virtual cursor position and screen dimensions
+    let mut remote_x = 960.0f32;
+    let mut remote_y = 540.0f32;
+    let remote_w = 1920.0f32;
+    let remote_h = 1080.0f32;
+    let mut target_ip = String::new();
+    let mut target_port = 48700u16;
+    let mut current_return_edge: Option<Edge> = None;
+
+    let mut seq = 0u32;
+    let threshold = 4i32;
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        let (is_running, is_paused, local_id, active_id, connected_peers, dwell_ms) = {
+            let app = shared_state.lock().unwrap();
+            let peers: Vec<crate::types::DeviceInfo> = app
+                .devices
+                .iter()
+                .filter(|d| !d.is_local && d.is_connected)
+                .cloned()
+                .collect();
+            (
+                app.engine_running,
+                app.engine_paused,
+                app.local_device_id.clone(),
+                app.active_device_id.clone(),
+                peers,
+                app.settings.edge_dwell_ms.max(100),
+            )
+        };
+
+        if !is_running || is_paused || connected_peers.is_empty() {
+            if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+                IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+            }
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+
+        let is_controlling = IS_CONTROLLING_REMOTE.load(Ordering::Relaxed);
+        let (screen_w, screen_h) = get_screen_dimensions();
+
+        // ── Case 1: Local machine has physical mouse ownership ──
+        if !is_controlling && active_id == local_id {
+            if let Some((cur_x, cur_y)) = get_local_cursor_pos() {
+                // Detect which screen edge cursor is dwelling on
+                let edge = if cur_x >= screen_w - 1 - threshold {
+                    Some(Edge::Right)
+                } else if cur_x <= threshold {
+                    Some(Edge::Left)
+                } else if cur_y <= threshold {
+                    Some(Edge::Top)
+                } else if cur_y >= screen_h - 1 - threshold {
+                    Some(Edge::Bottom)
+                } else {
+                    None
+                };
+
+                if let Some(hit_edge) = edge {
+                    // Check topology: which device is connected at this edge?
+                    let next_target = {
+                        let app = shared_state.lock().unwrap();
+                        app.topology
+                            .neighbor_at_edge(&local_id, hit_edge)
+                            .map(|s| s.to_string())
+                    };
+
+                    if let Some(target_id) = next_target {
+                        if let Some(target_dev) = connected_peers.iter().find(|d| d.id == target_id)
+                        {
+                            let now = Instant::now();
+                            let is_same = match dwell_start {
+                                Some((e, _)) => e == hit_edge,
+                                None => false,
+                            };
+
+                            if !is_same {
+                                dwell_start = Some((hit_edge, now));
+                            } else if let Some((_, start)) = dwell_start {
+                                if start.elapsed() >= Duration::from_millis(dwell_ms) {
+                                    // ── TRIGGER HANDOFF TO TARGET DEVICE ──
+                                    let norm_x = (cur_x as f32 / screen_w as f32).clamp(0.0, 1.0);
+                                    let norm_y = (cur_y as f32 / screen_h as f32).clamp(0.0, 1.0);
+                                    let entry_point = CircularTopology::calculate_entry_point(
+                                        hit_edge,
+                                        NormalizedPoint {
+                                            x: norm_x,
+                                            y: norm_y,
+                                        },
+                                    );
+
+                                    info!(
+                                        "Edge {:?} handoff triggered! Transferring control to {} ({})",
+                                        hit_edge, target_dev.name, target_dev.ip_address
+                                    );
+
+                                    target_ip = target_dev.ip_address.clone();
+                                    target_port = target_dev.port;
+                                    let target_device_id = target_dev.id.clone();
+                                    current_return_edge = Some(hit_edge.opposite());
+                                    remote_x = entry_point.x * remote_w;
+                                    remote_y = entry_point.y * remote_h;
+
+                                    // Send HandoffControl over UDP
+                                    let handoff = ControlMessage::HandoffControl {
+                                        entry_x_norm: entry_point.x,
+                                        entry_y_norm: entry_point.y,
+                                    };
+                                    if let Ok(bytes) = handoff.encode() {
+                                        let packet = NetworkPacket::new_control(bytes);
+                                        if let Ok(enc) = packet.encode() {
+                                            let dest = format!("{}:{}", target_ip, target_port);
+                                            let _ = send_socket.send_to(&enc, &dest);
+                                        }
+                                    }
+
+                                    // Update state
+                                    if let Ok(mut app) = shared_state.lock() {
+                                        app.active_device_id = target_device_id.clone();
+                                        app.topology.set_active_device(&target_device_id);
+                                        for d in &mut app.devices {
+                                            d.is_active = d.id == target_device_id;
+                                        }
+                                        app.add_log(
+                                            "INFO",
+                                            "friday_core::ownership",
+                                            &format!(
+                                                "Cursor crossed {:?} edge → Active ownership handed off to {}",
+                                                hit_edge, target_dev.name
+                                            ),
+                                        );
+                                        app.persist_config();
+                                    }
+
+                                    IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
+                                    HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
+                                    dwell_start = None;
+                                }
+                            }
+                        } else {
+                            dwell_start = None;
+                        }
+                    } else {
+                        dwell_start = None;
+                    }
+                } else {
+                    dwell_start = None;
+                }
+            }
+            std::thread::sleep(Duration::from_millis(3));
+        }
+        // ── Case 2: Local machine is in ControllingRemote mode ──
+        else if is_controlling {
+            // Drain captured mouse events from the hook and transmit to peer
+            let mut drained = false;
+            while let Ok(evt) = event_rx.try_recv() {
+                drained = true;
+                seq = seq.wrapping_add(1);
+
+                // Update virtual remote cursor coordinates
+                if let InputEvent::Mouse(MouseEvent::MoveRel { dx, dy, .. }) = evt {
+                    remote_x = (remote_x + dx as f32).clamp(0.0, remote_w - 1.0);
+                    remote_y = (remote_y + dy as f32).clamp(0.0, remote_h - 1.0);
+
+                    // Check return edge crossing
+                    if let Some(ret_edge) = current_return_edge {
+                        let hit_return = match ret_edge {
+                            Edge::Left => remote_x <= threshold as f32,
+                            Edge::Right => remote_x >= remote_w - 1.0 - threshold as f32,
+                            Edge::Top => remote_y <= threshold as f32,
+                            Edge::Bottom => remote_y >= remote_h - 1.0 - threshold as f32,
+                        };
+
+                        if hit_return {
+                            let now = Instant::now();
+                            let is_same = match return_dwell_start {
+                                Some((e, _)) => e == ret_edge,
+                                None => false,
+                            };
+                            if !is_same {
+                                return_dwell_start = Some((ret_edge, now));
+                            } else if let Some((_, start)) = return_dwell_start {
+                                if start.elapsed() >= Duration::from_millis(dwell_ms) {
+                                    // ── RETURN CONTROL TO LOCAL MACHINE ──
+                                    info!("Return edge {:?} dwell complete — returning control to local machine", ret_edge);
+
+                                    // Send TakeControl / ReleaseAll to peer
+                                    if let Ok(bytes) = ControlMessage::TakeControl.encode() {
+                                        let packet = NetworkPacket::new_control(bytes);
+                                        if let Ok(enc) = packet.encode() {
+                                            let dest = format!("{}:{}", target_ip, target_port);
+                                            let _ = send_socket.send_to(&enc, &dest);
+                                        }
+                                    }
+
+                                    IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+
+                                    // Position local cursor at return entry
+                                    let local_entry_x = match ret_edge {
+                                        Edge::Left => screen_w - 20,
+                                        Edge::Right => 20,
+                                        _ => (remote_x / remote_w * screen_w as f32) as i32,
+                                    };
+                                    let local_entry_y = match ret_edge {
+                                        Edge::Top => screen_h - 20,
+                                        Edge::Bottom => 20,
+                                        _ => (remote_y / remote_h * screen_h as f32) as i32,
+                                    };
+
+                                    set_local_cursor_pos(local_entry_x, local_entry_y);
+
+                                    if let Ok(mut app) = shared_state.lock() {
+                                        let local_id_clone = app.local_device_id.clone();
+                                        app.active_device_id = local_id_clone.clone();
+                                        app.topology.set_active_device(&local_id_clone);
+                                        for d in &mut app.devices {
+                                            d.is_active = d.id == local_id_clone;
+                                        }
+                                        app.add_log(
+                                            "INFO",
+                                            "friday_core::ownership",
+                                            "Cursor returned to local machine",
+                                        );
+                                        app.persist_config();
+                                    }
+
+                                    return_dwell_start = None;
+                                    break;
+                                }
+                            }
+                        } else {
+                            return_dwell_start = None;
+                        }
+                    }
+                }
+
+                // Send input packet over UDP to target peer
+                let packet = NetworkPacket::new_input(evt, seq);
+                if let Ok(enc) = packet.encode() {
+                    let dest = format!("{}:{}", target_ip, target_port);
+                    let _ = send_socket.send_to(&enc, &dest);
+                }
+            }
+
+            // Also check if active_id was changed via GUI (e.g. user clicked Take Control on local device)
+            if active_id == local_id && is_controlling {
+                IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+                return_dwell_start = None;
+            }
+
+            if !drained {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+}
+
+// ── Public notification helpers ────────────────────────────────────────────────
+
+/// Called when user clicks "Take Control" in the GUI
+pub fn notify_active_device_changed(shared_state: &SharedAppState, new_active_id: &str) {
+    let (is_local, target_addr) = {
+        let app = shared_state.lock().unwrap();
+        let is_loc = new_active_id == app.local_device_id;
+        let addr = app
+            .devices
+            .iter()
+            .find(|d| d.id == new_active_id)
+            .map(|d| format!("{}:{}", d.ip_address, d.port));
+        (is_loc, addr)
+    };
+
+    if is_local {
+        // We took control locally!
+        IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+        // Tell all peers we took control
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let app = shared_state.lock().unwrap();
+            for d in app.devices.iter().filter(|d| !d.is_local && d.is_connected) {
+                let dest = format!("{}:{}", d.ip_address, d.port);
+                if let Ok(bytes) = ControlMessage::TakeControl.encode() {
+                    let packet = NetworkPacket::new_control(bytes);
+                    if let Ok(enc) = packet.encode() {
+                        let _ = socket.send_to(&enc, &dest);
+                    }
+                }
+            }
+        }
+    } else if let Some(dest) = target_addr {
+        // We gave control to a remote device
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let handoff = ControlMessage::HandoffControl {
+                entry_x_norm: 0.5,
+                entry_y_norm: 0.5,
+            };
+            if let Ok(bytes) = handoff.encode() {
+                let packet = NetworkPacket::new_control(bytes);
+                if let Ok(enc) = packet.encode() {
+                    let _ = socket.send_to(&enc, &dest);
+                }
+            }
+        }
+    }
+}
+
+/// Called when a device connects
+pub fn notify_device_connected(shared_state: &SharedAppState, device_id: &str) {
+    let target = {
+        let app = shared_state.lock().unwrap();
+        app.devices
+            .iter()
+            .find(|d| d.id == device_id || d.ip_address == device_id)
+            .map(|d| (d.ip_address.clone(), d.port))
+    };
+
+    if let Some((ip, port)) = target {
+        let (w, h) = get_screen_dimensions();
+        let hello = ControlMessage::Hello {
+            device_name: crate::state::detect_local_hostname(),
+            screen: friday_agent::control::ScreenInfo {
+                width: w as u32,
+                height: h as u32,
+                scale_factor: 1.0,
+                device_name: crate::state::detect_local_hostname(),
+            },
+        };
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let dest = format!("{}:{}", ip, port);
+            if let Ok(bytes) = hello.encode() {
+                let packet = NetworkPacket::new_control(bytes);
+                if let Ok(enc) = packet.encode() {
+                    let _ = socket.send_to(&enc, &dest);
+                }
+            }
+        }
+    }
+}
+
+/// Called when a device disconnects
+pub fn notify_device_disconnected(shared_state: &SharedAppState, device_id: &str) {
+    let target = {
+        let app = shared_state.lock().unwrap();
+        app.devices
+            .iter()
+            .find(|d| d.id == device_id || d.ip_address == device_id)
+            .map(|d| (d.ip_address.clone(), d.port))
+    };
+
+    if let Some((ip, port)) = target {
+        if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            let dest = format!("{}:{}", ip, port);
+            if let Ok(bytes) = ControlMessage::Goodbye.encode() {
+                let packet = NetworkPacket::new_control(bytes);
+                if let Ok(enc) = packet.encode() {
+                    let _ = socket.send_to(&enc, &dest);
+                }
+            }
+        }
+    }
+}

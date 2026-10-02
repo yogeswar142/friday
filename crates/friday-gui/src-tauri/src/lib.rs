@@ -2,6 +2,7 @@ pub mod commands;
 pub mod config;
 pub mod diagnostics;
 pub mod discovery;
+pub mod engine;
 pub mod pairing;
 pub mod state;
 pub mod types;
@@ -31,7 +32,10 @@ pub fn run() {
     discovery::start_discovery_service(shared_state.clone(), stop_flag.clone());
 
     // Launch background UDP pairing responder (listens for incoming pair requests)
-    pairing::start_pairing_responder(stop_flag.clone());
+    pairing::start_pairing_responder(shared_state.clone(), stop_flag.clone());
+
+    // Launch background Mouse Topology Engine service
+    engine::start_engine_service(shared_state.clone(), stop_flag.clone());
 
     tauri::Builder::default()
         .manage(shared_state)

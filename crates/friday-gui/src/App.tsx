@@ -57,6 +57,9 @@ export const App: React.FC = () => {
     const interval = setInterval(() => {
       api.getStatus().then(setStatus).catch(() => {});
       api.getTelemetry().then(setTelemetry).catch(() => {});
+      // Poll devices and topology to keep remote changes (unpair/pair/connect) in sync
+      api.getDevices().then(setDevices).catch(() => {});
+      api.getTopology().then(setTopology).catch(() => {});
       // Poll for incoming pair requests on this machine (from remote FRIDAY nodes)
       api.getPendingPairRequests().then(setPendingRequests).catch(() => {});
       // Poll logs so diagnostics log view updates in real time

@@ -252,7 +252,10 @@ pub fn send_pairing_request(
 /// Start the pairing request responder in a background thread.
 /// Listens on PAIR_REQUEST_PORT for incoming FRIDAY_PAIR_REQUEST messages,
 /// stores them in PENDING_REQUESTS for the GUI to display.
-pub fn start_pairing_responder(stop_flag: Arc<AtomicBool>) {
+pub fn start_pairing_responder(
+    shared_state: Arc<Mutex<crate::state::AppState>>,
+    stop_flag: Arc<AtomicBool>,
+) {
     let _ = pending(); // initialise OnceLock
 
     std::thread::spawn(move || {
@@ -284,6 +287,49 @@ pub fn start_pairing_responder(stop_flag: Arc<AtomicBool>) {
                     // ── Connectivity probe (pre-flight check from initiator) ──
                     if msg.starts_with("FRIDAY_PAIR_PROBE:") {
                         let _ = socket.send_to(b"FRIDAY_PAIR_PROBE_ACK", src);
+                        continue;
+                    }
+
+                    // ── Remote Unpair notification ──
+                    // Format: FRIDAY_UNPAIR:<from_id>
+                    if msg.starts_with("FRIDAY_UNPAIR:") {
+                        let from_id = msg.trim_start_matches("FRIDAY_UNPAIR:").trim();
+                        let from_ip = src.ip().to_string();
+                        info!("Received FRIDAY_UNPAIR from {} ({})", from_id, from_ip);
+                        if let Ok(mut app) = shared_state.lock() {
+                            let removed = app
+                                .devices
+                                .iter()
+                                .find(|d| {
+                                    d.id == from_id || d.ip_address == from_ip || d.id == from_ip
+                                })
+                                .cloned();
+                            if let Some(dev) = removed {
+                                let target_id = dev.id.clone();
+                                let target_name = dev.name.clone();
+                                app.devices.retain(|d| {
+                                    d.id != target_id && d.ip_address != from_ip && d.id != from_id
+                                });
+                                app.topology.remove_device(&target_id);
+                                app.topology.remove_device(from_id);
+                                if app.active_device_id == target_id
+                                    || app.active_device_id == from_id
+                                {
+                                    let local_id = app.local_device_id.clone();
+                                    app.active_device_id = local_id.clone();
+                                    app.topology.set_active_device(&local_id);
+                                }
+                                app.add_log(
+                                    "INFO",
+                                    "friday_network::pairing",
+                                    &format!(
+                                        "Device {} ({}) unpaired by remote peer",
+                                        target_name, target_id
+                                    ),
+                                );
+                                app.persist_config();
+                            }
+                        }
                         continue;
                     }
 

@@ -48,6 +48,8 @@ pub enum ControlMessage {
         entry_x_norm: f32,
         entry_y_norm: f32,
     },
+    /// Direct ownership switch from UI or key shortcut
+    TakeControl,
     /// Safety: release all held inputs immediately
     ReleaseAll,
     /// Heartbeat for connection liveness
