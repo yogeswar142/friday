@@ -25,12 +25,19 @@ static FREEZE_CURSOR_X: AtomicI32 = AtomicI32::new(-1);
 static FREEZE_CURSOR_Y: AtomicI32 = AtomicI32::new(-1);
 static IS_SELF_SETTING_CURSOR: AtomicBool = AtomicBool::new(false);
 
+// Client-side held button tracking to prevent phantom button release / context menu pops on handoff
+static CLIENT_HELD_LEFT: AtomicBool = AtomicBool::new(false);
+static CLIENT_HELD_RIGHT: AtomicBool = AtomicBool::new(false);
+static CLIENT_HELD_MIDDLE: AtomicBool = AtomicBool::new(false);
+
 pub const FRIDAY_INJECTED_MAGIC: usize = 0x46524944; // "FRID"
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(target_os = "windows")]
-use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_ESCAPE};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    mouse_event, GetAsyncKeyState, MOUSEEVENTF_MOVE, VK_ESCAPE,
+};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetCursorPos, GetSystemMetrics, PeekMessageW, SetCursorPos,
@@ -89,9 +96,13 @@ pub fn set_local_cursor_pos(x: i32, y: i32) {
     #[cfg(target_os = "windows")]
     {
         IS_SELF_SETTING_CURSOR.store(true, Ordering::SeqCst);
-        // SAFETY: SetCursorPos is safe with integer screen coordinates
+        // SAFETY: SetCursorPos is safe with integer screen coordinates.
+        // We also fire a hardware-level zero-delta mouse_event tagged with FRIDAY_INJECTED_MAGIC.
+        // This wakes up DWM cursor rendering, breaks touch/tablet cursor suppression,
+        // and guarantees the cursor remains visible without distorting pixel-perfect coordinates.
         unsafe {
             let _ = SetCursorPos(x, y);
+            mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, FRIDAY_INJECTED_MAGIC);
         }
         IS_SELF_SETTING_CURSOR.store(false, Ordering::SeqCst);
     }
@@ -682,6 +693,8 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
     let mut client_last_move_log = Instant::now();
     let mut client_move_count = 0u32;
 
+    let mut last_keepalive = Instant::now();
+
     while !stop_flag.load(Ordering::Relaxed) {
         match socket.recv_from(&mut buf) {
             Ok((len, src)) => {
@@ -703,6 +716,27 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                     InputEvent::Mouse(MouseEvent::Button {
                                         button, state, ..
                                     }) => {
+                                        match (button, state) {
+                                            (MouseButton::Left, ElementState::Pressed) => {
+                                                CLIENT_HELD_LEFT.store(true, Ordering::SeqCst)
+                                            }
+                                            (MouseButton::Left, ElementState::Released) => {
+                                                CLIENT_HELD_LEFT.store(false, Ordering::SeqCst)
+                                            }
+                                            (MouseButton::Right, ElementState::Pressed) => {
+                                                CLIENT_HELD_RIGHT.store(true, Ordering::SeqCst)
+                                            }
+                                            (MouseButton::Right, ElementState::Released) => {
+                                                CLIENT_HELD_RIGHT.store(false, Ordering::SeqCst)
+                                            }
+                                            (MouseButton::Middle, ElementState::Pressed) => {
+                                                CLIENT_HELD_MIDDLE.store(true, Ordering::SeqCst)
+                                            }
+                                            (MouseButton::Middle, ElementState::Released) => {
+                                                CLIENT_HELD_MIDDLE.store(false, Ordering::SeqCst)
+                                            }
+                                            _ => {}
+                                        }
                                         if let Ok(mut app) = shared_state.lock() {
                                             app.add_log(
                                                 "INFO",
@@ -764,6 +798,25 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
             packets_this_sec = 0;
             bytes_this_sec = 0;
             last_second = Instant::now();
+        }
+
+        // Client active keepalive: pulse mouse_event every 2 seconds to prevent Windows cursor auto-hide during inactivity
+        if last_keepalive.elapsed() >= Duration::from_secs(2) {
+            last_keepalive = Instant::now();
+            let is_client_active = if let Ok(app) = shared_state.lock() {
+                !app.is_host && app.active_device_id == app.local_device_id
+            } else {
+                false
+            };
+            if is_client_active {
+                #[cfg(target_os = "windows")]
+                {
+                    // SAFETY: Pulse zero-delta mouse move to prevent Windows from auto-hiding the cursor during inactivity
+                    unsafe {
+                        mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, FRIDAY_INJECTED_MAGIC);
+                    }
+                }
+            }
         }
     }
 }
@@ -836,17 +889,28 @@ fn handle_incoming_control(
             }
             ControlMessage::ReleaseAll => {
                 debug!("Received ReleaseAll from {}", src);
-                // Release held mouse buttons on client
-                inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
-                    button: MouseButton::Left,
-                    state: ElementState::Released,
-                    timestamp: 0,
-                }));
-                inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
-                    button: MouseButton::Right,
-                    state: ElementState::Released,
-                    timestamp: 0,
-                }));
+                // Only release buttons that were actually held down on this client
+                if CLIENT_HELD_LEFT.swap(false, Ordering::SeqCst) {
+                    inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
+                        button: MouseButton::Left,
+                        state: ElementState::Released,
+                        timestamp: 0,
+                    }));
+                }
+                if CLIENT_HELD_RIGHT.swap(false, Ordering::SeqCst) {
+                    inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
+                        button: MouseButton::Right,
+                        state: ElementState::Released,
+                        timestamp: 0,
+                    }));
+                }
+                if CLIENT_HELD_MIDDLE.swap(false, Ordering::SeqCst) {
+                    inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
+                        button: MouseButton::Middle,
+                        state: ElementState::Released,
+                        timestamp: 0,
+                    }));
+                }
                 if let Ok(mut app) = shared_state.lock() {
                     if !app.is_host {
                         // On Client, cursor is no longer on this display; mark host as active owner

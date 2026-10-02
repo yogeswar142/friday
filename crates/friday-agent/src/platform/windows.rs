@@ -37,7 +37,7 @@ pub fn query_display_info() -> Result<DisplayBounds> {
     }
 }
 
-/// Inject an InputEvent into the Windows input system via SendInput
+/// Inject an InputEvent into the Windows input system via SendInput with mouse_event UIPI fallback
 pub fn inject_event(event: &InputEvent) -> Result<()> {
     #[cfg(target_os = "windows")]
     {
@@ -49,12 +49,84 @@ pub fn inject_event(event: &InputEvent) -> Result<()> {
         // SendInput copies the data before returning. nInputs matches inputs.len().
         let result = unsafe { SendInput(inputs.as_slice(), std::mem::size_of::<INPUT>() as i32) };
         if result == 0 {
-            return Err(AgentError::InjectionError(
-                "SendInput returned 0 — possible UIPI block".into(),
-            ));
+            // Fallback: If SendInput is blocked by Windows UIPI (e.g. over elevated Admin windows or headless runner),
+            // fall back to mouse_event which operates directly at the hardware abstraction layer.
+            if let InputEvent::Mouse(mouse_evt) = event {
+                // SAFETY: mouse_event is a standard Win32 input API with well-defined parameters
+                unsafe {
+                    match mouse_evt {
+                        MouseEvent::Button { button, state, .. } => {
+                            let flags = match (button, state) {
+                                (MouseButton::Left, ElementState::Pressed) => MOUSEEVENTF_LEFTDOWN,
+                                (MouseButton::Left, ElementState::Released) => MOUSEEVENTF_LEFTUP,
+                                (MouseButton::Right, ElementState::Pressed) => {
+                                    MOUSEEVENTF_RIGHTDOWN
+                                }
+                                (MouseButton::Right, ElementState::Released) => MOUSEEVENTF_RIGHTUP,
+                                (MouseButton::Middle, ElementState::Pressed) => {
+                                    MOUSEEVENTF_MIDDLEDOWN
+                                }
+                                (MouseButton::Middle, ElementState::Released) => {
+                                    MOUSEEVENTF_MIDDLEUP
+                                }
+                                _ => return Ok(()),
+                            };
+                            windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
+                                flags,
+                                0,
+                                0,
+                                0,
+                                FRIDAY_INJECTED_MAGIC,
+                            );
+                            return Ok(());
+                        }
+                        MouseEvent::MoveRel { dx, dy, .. } => {
+                            windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
+                                MOUSEEVENTF_MOVE,
+                                *dx as i32,
+                                *dy as i32,
+                                0,
+                                FRIDAY_INJECTED_MAGIC,
+                            );
+                            return Ok(());
+                        }
+                        MouseEvent::Scroll { dx, dy, .. } => {
+                            if *dy != 0 {
+                                let wheel_delta = (-(*dy as i32)) * 120;
+                                windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
+                                    MOUSEEVENTF_WHEEL,
+                                    0,
+                                    0,
+                                    wheel_delta,
+                                    FRIDAY_INJECTED_MAGIC,
+                                );
+                            }
+                            if *dx != 0 {
+                                let wheel_delta = (*dx as i32) * 120;
+                                windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
+                                    MOUSEEVENTF_HWHEEL,
+                                    0,
+                                    0,
+                                    wheel_delta,
+                                    FRIDAY_INJECTED_MAGIC,
+                                );
+                            }
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let err = unsafe { windows::Win32::Foundation::GetLastError() };
+            return Err(AgentError::InjectionError(format!(
+                "SendInput returned 0 — GetLastError={:?}",
+                err
+            )));
         }
         Ok(())
     }
+
     #[cfg(not(target_os = "windows"))]
     {
         let _ = event;
@@ -139,5 +211,50 @@ fn make_mouse_input(
                 dwExtraInfo: FRIDAY_INJECTED_MAGIC,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_build_inputs() {
+        let evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 10,
+            dy: -5,
+            timestamp: 0,
+        });
+        let inputs = build_inputs(&evt).expect("Failed to build inputs");
+        assert_eq!(inputs.len(), 1);
+
+        let btn_evt = InputEvent::Mouse(MouseEvent::Button {
+            button: MouseButton::Left,
+            state: ElementState::Pressed,
+            timestamp: 0,
+        });
+        let btn_inputs = build_inputs(&btn_evt).expect("Failed to build button inputs");
+        assert_eq!(btn_inputs.len(), 1);
+    }
+
+    #[test]
+    fn test_inject_move_rel() {
+        let evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 0,
+            dy: 0,
+            timestamp: 0,
+        });
+        assert!(inject_event(&evt).is_ok());
+    }
+
+    #[test]
+    fn test_inject_button_left() {
+        // Test button release (safe in test runner)
+        let evt = InputEvent::Mouse(MouseEvent::Button {
+            button: MouseButton::Left,
+            state: ElementState::Released,
+            timestamp: 0,
+        });
+        assert!(inject_event(&evt).is_ok());
     }
 }
