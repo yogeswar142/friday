@@ -359,10 +359,16 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
     let center_y = screen_h / 2;
 
     // Create a 1x1 transparent invisible cursor so that no cursor is rendered on screen during grab
-    let mut dummy_color = x11::xlib::XColor::default();
+    let mut dummy_color: x11::xlib::XColor = unsafe { std::mem::zeroed() };
     let data = [0u8; 1];
     let blank_pixmap = unsafe {
-        x11::xlib::XCreateBitmapFromData(display, root, data.as_ptr() as *const i8, 1, 1)
+        x11::xlib::XCreateBitmapFromData(
+            display,
+            root,
+            data.as_ptr() as *const std::os::raw::c_char,
+            1,
+            1,
+        )
     };
     let blank_cursor = unsafe {
         x11::xlib::XCreatePixmapCursor(
