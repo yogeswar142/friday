@@ -119,25 +119,28 @@ export const App: React.FC = () => {
   };
 
   const handleSwitchOwner = async (deviceId: string) => {
-    await api.switchActiveDevice(deviceId);
-    const nextStatus = await api.getStatus();
-    setStatus(nextStatus);
-    const nextDevs = await api.getDevices();
-    setDevices(nextDevs);
+    try {
+      await api.switchActiveDevice(deviceId);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to switch active owner:", e);
+      alert(`Could not switch active owner: ${e}`);
+    }
   };
 
   const handleUpdateRing = async (newRing: string[]) => {
-    await api.setTopology(newRing);
-    const nextTopo = await api.getTopology();
-    setTopology(nextTopo);
-    const nextStatus = await api.getStatus();
-    setStatus(nextStatus);
+    try {
+      await api.setTopology(newRing);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to update topology:", e);
+    }
   };
 
   const handleManualAddDevice = async (ip: string, port?: number, name?: string) => {
     try {
       await api.addManualDevice(ip, port, name);
-      refreshAllData();
+      await refreshAllData();
     } catch (e) {
       console.error("Failed to add device:", e);
       alert(`Failed to add device: ${e}`);
@@ -161,25 +164,40 @@ export const App: React.FC = () => {
       await api.respondToPairRequest(pin, accept);
       // Remove from local list immediately
       setPendingRequests((prev) => prev.filter((r) => r.pin !== pin));
-      if (accept) refreshAllData();
+      await refreshAllData();
     } catch (e) {
       console.error("Failed to respond to pair request:", e);
     }
   };
 
   const handleUnpairDevice = async (deviceId: string) => {
-    await api.unpairDevice(deviceId);
-    refreshAllData();
+    try {
+      await api.unpairDevice(deviceId);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to unpair device:", e);
+      alert(`Could not unpair device: ${e}`);
+    }
   };
 
   const handleConnectDevice = async (deviceId: string) => {
-    await api.connectDevice(deviceId);
-    refreshAllData();
+    try {
+      await api.connectDevice(deviceId);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to connect device:", e);
+      alert(`Could not connect device: ${e}`);
+    }
   };
 
   const handleDisconnectDevice = async (deviceId: string) => {
-    await api.disconnectDevice(deviceId);
-    refreshAllData();
+    try {
+      await api.disconnectDevice(deviceId);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to disconnect device:", e);
+      alert(`Could not disconnect device: ${e}`);
+    }
   };
 
   const handleRunDiagnostics = async () => {

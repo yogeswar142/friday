@@ -66,22 +66,43 @@ pub fn switch_active_device(
     state: State<'_, SharedAppState>,
 ) -> Result<(), String> {
     let mut app = state.lock().unwrap();
-    if !app.topology.ring.contains(&device_id) {
+
+    let dev = app
+        .devices
+        .iter()
+        .find(|d| d.id == device_id || d.ip_address == device_id)
+        .cloned();
+
+    let target_id = if let Some(ref d) = dev {
+        if !app.topology.ring.contains(&d.id) {
+            app.topology.add_device(friday_core::ScreenLayout {
+                device_id: d.id.clone(),
+                name: d.name.clone(),
+                bounds: friday_core::DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+            });
+        }
+        d.id.clone()
+    } else {
+        device_id.clone()
+    };
+
+    if !app.topology.ring.contains(&target_id) {
         return Err(format!(
             "Device {} is not in the circular ring topology",
-            device_id
+            target_id
         ));
     }
-    app.active_device_id = device_id.clone();
-    app.topology.set_active_device(&device_id);
+    app.active_device_id = target_id.clone();
+    app.topology.set_active_device(&target_id);
     for d in &mut app.devices {
-        d.is_active = d.id == device_id;
+        d.is_active = d.id == target_id;
     }
     app.add_log(
         "INFO",
         "friday_core::ownership",
-        &format!("Ownership manually switched to {}", device_id),
+        &format!("Ownership manually switched to {}", target_id),
     );
+    app.persist_config();
     Ok(())
 }
 
@@ -216,14 +237,31 @@ pub fn pair_device(
 #[tauri::command]
 pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
     let mut app = state.lock().unwrap();
-    if device_id == app.local_device_id {
-        return Err("Cannot unpair the local host machine".into());
-    }
 
-    app.devices.retain(|d| d.id != device_id);
+    let dev = app
+        .devices
+        .iter()
+        .find(|d| d.id == device_id || d.ip_address == device_id)
+        .cloned();
+
+    let (target_id, target_name) = if let Some(ref d) = dev {
+        if d.id == app.local_device_id || d.is_local {
+            return Err("Cannot unpair the local host machine".into());
+        }
+        (d.id.clone(), d.name.clone())
+    } else {
+        if device_id == app.local_device_id {
+            return Err("Cannot unpair the local host machine".into());
+        }
+        (device_id.clone(), device_id.clone())
+    };
+
+    app.devices
+        .retain(|d| d.id != target_id && d.ip_address != target_id && d.id != device_id && d.ip_address != device_id);
+    app.topology.remove_device(&target_id);
     app.topology.remove_device(&device_id);
 
-    if app.active_device_id == device_id {
+    if app.active_device_id == target_id || app.active_device_id == device_id {
         let local_id = app.local_device_id.clone();
         app.active_device_id = local_id.clone();
         app.topology.set_active_device(&local_id);
@@ -232,7 +270,7 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
     app.add_log(
         "INFO",
         "friday_network::pairing",
-        &format!("Device {} unpaired", device_id),
+        &format!("Device {} ({}) unpaired", target_name, target_id),
     );
     app.persist_config();
     Ok(())
@@ -241,13 +279,19 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
 #[tauri::command]
 pub fn connect_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
     let mut app = state.lock().unwrap();
-    if let Some(dev) = app.devices.iter_mut().find(|d| d.id == device_id) {
+    if let Some(dev) = app
+        .devices
+        .iter_mut()
+        .find(|d| d.id == device_id || d.ip_address == device_id)
+    {
         dev.is_connected = true;
+        let name = dev.name.clone();
         app.add_log(
             "INFO",
             "friday_network::transport",
-            &format!("Connected to {}", device_id),
+            &format!("Connected to {}", name),
         );
+        app.persist_config();
         Ok(())
     } else {
         Err(format!("Device {} not found", device_id))
@@ -260,9 +304,17 @@ pub fn disconnect_device(
     state: State<'_, SharedAppState>,
 ) -> Result<(), String> {
     let mut app = state.lock().unwrap();
-    if let Some(dev) = app.devices.iter_mut().find(|d| d.id == device_id) {
-        dev.is_connected = false;
-        if app.active_device_id == device_id {
+    let found_id = app
+        .devices
+        .iter()
+        .find(|d| d.id == device_id || d.ip_address == device_id)
+        .map(|d| d.id.clone());
+
+    if let Some(id) = found_id {
+        if let Some(dev) = app.devices.iter_mut().find(|d| d.id == id) {
+            dev.is_connected = false;
+        }
+        if app.active_device_id == id {
             let local_id = app.local_device_id.clone();
             app.active_device_id = local_id.clone();
             app.topology.set_active_device(&local_id);
@@ -270,8 +322,9 @@ pub fn disconnect_device(
         app.add_log(
             "INFO",
             "friday_network::transport",
-            &format!("Disconnected from {}", device_id),
+            &format!("Disconnected from {}", id),
         );
+        app.persist_config();
         Ok(())
     } else {
         Err(format!("Device {} not found", device_id))

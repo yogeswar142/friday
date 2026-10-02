@@ -317,20 +317,27 @@ export const api = {
   stopEngine: () => invokeTauri<EngineStatus>("stop_engine"),
   pauseEngine: () => invokeTauri<EngineStatus>("pause_engine"),
   getActiveDevice: () => invokeTauri<string>("get_active_device"),
-  switchActiveDevice: (device_id: string) => invokeTauri<void>("switch_active_device", { device_id }),
+  switchActiveDevice: (deviceId: string) =>
+    invokeTauri<void>("switch_active_device", { deviceId, device_id: deviceId }),
   getDevices: () => invokeTauri<DeviceInfo[]>("get_devices"),
   discoverDevices: () => invokeTauri<DiscoveredDevice[]>("discover_devices"),
-  addManualDevice: (ip_address: string, port?: number, name?: string) =>
-    invokeTauri<DeviceInfo>("add_manual_device", { ip_address, port, name }),
-  pairDevice: (device_id: string) => invokeTauri<DeviceInfo>("pair_device", { device_id }),
-  unpairDevice: (device_id: string) => invokeTauri<void>("unpair_device", { device_id }),
-  connectDevice: (device_id: string) => invokeTauri<void>("connect_device", { device_id }),
-  disconnectDevice: (device_id: string) => invokeTauri<void>("disconnect_device", { device_id }),
+  addManualDevice: (ipAddress: string, port?: number, name?: string) =>
+    invokeTauri<DeviceInfo>("add_manual_device", { ipAddress, ip_address: ipAddress, port, name }),
+  pairDevice: (deviceId: string) =>
+    invokeTauri<DeviceInfo>("pair_device", { deviceId, device_id: deviceId }),
+  unpairDevice: (deviceId: string) =>
+    invokeTauri<void>("unpair_device", { deviceId, device_id: deviceId }),
+  connectDevice: (deviceId: string) =>
+    invokeTauri<void>("connect_device", { deviceId, device_id: deviceId }),
+  disconnectDevice: (deviceId: string) =>
+    invokeTauri<void>("disconnect_device", { deviceId, device_id: deviceId }),
   getTopology: () => invokeTauri<TopologyDto>("get_topology"),
   setTopology: (ring: string[]) => invokeTauri<void>("set_topology", { ring }),
   reorderRing: (ring: string[]) => invokeTauri<void>("reorder_ring", { ring }),
-  addRingDevice: (device_id: string) => invokeTauri<void>("add_ring_device", { device_id }),
-  removeRingDevice: (device_id: string) => invokeTauri<void>("remove_ring_device", { device_id }),
+  addRingDevice: (deviceId: string) =>
+    invokeTauri<void>("add_ring_device", { deviceId, device_id: deviceId }),
+  removeRingDevice: (deviceId: string) =>
+    invokeTauri<void>("remove_ring_device", { deviceId, device_id: deviceId }),
   getTelemetry: () => invokeTauri<TelemetryDto>("get_telemetry"),
   runDiagnostics: () => invokeTauri<DiagnosticReport>("run_diagnostics"),
   runBenchmark: () => invokeTauri<BenchmarkReport>("run_benchmark"),
@@ -341,8 +348,14 @@ export const api = {
   openPermissionSettings: () => invokeTauri<void>("open_permission_settings"),
   getLogs: () => invokeTauri<LogEntry[]>("get_logs"),
   /** Send pairing request to remote device — blocks up to 30s waiting for user accept */
-  initiatePairing: (device_id: string, pin: string, target_ip?: string) =>
-    invokeTauri<boolean>("initiate_pairing", { device_id, pin, target_ip }),
+  initiatePairing: (deviceId: string, pin: string, targetIp?: string) =>
+    invokeTauri<boolean>("initiate_pairing", {
+      deviceId,
+      device_id: deviceId,
+      pin,
+      targetIp,
+      target_ip: targetIp,
+    }),
   /** Poll for incoming pair requests on this machine (call every 2s) */
   getPendingPairRequests: () =>
     invokeTauri<PendingPairRequest[]>("get_pending_pair_requests"),
