@@ -163,7 +163,9 @@ unsafe extern "system" fn low_level_mouse_proc(
             // touchpads (Synaptics, ELAN, Precision Touchpad) frequently report their input
             // via driver-injected events (bit 0 = 1). Checking dwExtraInfo and IS_SELF_SETTING_CURSOR
             // ensures physical mouse AND laptop touchpads work flawlessly!
-            if IS_SELF_SETTING_CURSOR.load(Ordering::SeqCst) || info.dwExtraInfo == FRIDAY_INJECTED_MAGIC {
+            if IS_SELF_SETTING_CURSOR.load(Ordering::SeqCst)
+                || info.dwExtraInfo == FRIDAY_INJECTED_MAGIC
+            {
                 return CallNextHookEx(None, n_code, w_param, l_param);
             }
 
@@ -342,7 +344,7 @@ fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
 #[cfg(target_os = "linux")]
 fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
     info!("Starting Linux X11 mouse capture thread");
-    // SAFETY: Open dedicated X display connection for the capture thread
+    // SAFETY: Open dedicated X display connection for this background capture worker
     let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
     if display.is_null() {
         warn!("run_linux_hook_thread: Failed to open X display — mouse capture disabled");
@@ -356,54 +358,120 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
     let center_x = screen_w / 2;
     let center_y = screen_h / 2;
 
+    // Create a 1x1 transparent invisible cursor so that no cursor is rendered on screen during grab
+    let mut dummy_color = x11::xlib::XColor::default();
+    let data = [0u8; 1];
+    let blank_pixmap = unsafe {
+        x11::xlib::XCreateBitmapFromData(display, root, data.as_ptr() as *const i8, 1, 1)
+    };
+    let blank_cursor = unsafe {
+        x11::xlib::XCreatePixmapCursor(
+            display,
+            blank_pixmap,
+            blank_pixmap,
+            &mut dummy_color,
+            &mut dummy_color,
+            0,
+            0,
+        )
+    };
+    unsafe {
+        x11::xlib::XFreePixmap(display, blank_pixmap);
+    }
+
     let mut was_controlling = false;
+    let mut last_x = center_x;
+    let mut last_y = center_y;
 
     while !stop_flag.load(Ordering::Relaxed) {
         let is_controlling = IS_CONTROLLING_REMOTE.load(Ordering::Relaxed);
 
         if is_controlling && !was_controlling {
-            // Host just began controlling remote: grab pointer on X11
+            // ── State Transition: Local Host -> Controlling Remote ──
             unsafe {
-                // Grab pointer so no clicks/movement leak to local Linux applications
-                let grab_status = x11::xlib::XGrabPointer(
-                    display,
-                    root,
-                    0,
-                    (x11::xlib::PointerMotionMask
-                        | x11::xlib::ButtonPressMask
-                        | x11::xlib::ButtonReleaseMask) as u32,
-                    x11::xlib::GrabModeAsync,
-                    x11::xlib::GrabModeAsync,
-                    0,
-                    0,
-                    x11::xlib::CurrentTime,
-                );
-                if grab_status == x11::xlib::GrabSuccess {
-                    debug!("Linux X11 pointer successfully grabbed for remote control");
-                } else {
-                    warn!("Linux X11 XGrabPointer returned status {}", grab_status);
-                }
-                // Warp pointer to center to allow relative motion deltas
+                // 1. Hide the local cursor via XFixes
+                x11::xfixes::XFixesHideCursor(display, root);
+
+                // 2. Warp pointer to center to give ample room for relative movement
                 x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, center_x, center_y);
                 x11::xlib::XFlush(display);
+
+                // 3. Grab pointer with blank_cursor so clicks/moves never leak to local apps
+                let mut grabbed = false;
+                for _ in 0..10 {
+                    let status = x11::xlib::XGrabPointer(
+                        display,
+                        root,
+                        0, // owner_events = False
+                        (x11::xlib::PointerMotionMask
+                            | x11::xlib::ButtonPressMask
+                            | x11::xlib::ButtonReleaseMask) as u32,
+                        x11::xlib::GrabModeAsync,
+                        x11::xlib::GrabModeAsync,
+                        0, // confine_to = None
+                        blank_cursor,
+                        x11::xlib::CurrentTime,
+                    );
+                    if status == x11::xlib::GrabSuccess {
+                        grabbed = true;
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                if grabbed {
+                    debug!("Linux X11 pointer successfully grabbed with invisible cursor");
+                } else {
+                    warn!("Linux X11 XGrabPointer failed after 10 attempts");
+                }
+
+                // 4. Drain all pending events generated during the transition (including warp to center)
+                x11::xlib::XFlush(display);
+                while x11::xlib::XPending(display) > 0 {
+                    let mut discard: x11::xlib::XEvent = std::mem::zeroed();
+                    x11::xlib::XNextEvent(display, &mut discard);
+                }
             }
+
+            last_x = center_x;
+            last_y = center_y;
             was_controlling = true;
         } else if !is_controlling && was_controlling {
-            // Host returned to controlling local machine: ungrab pointer
+            // ── State Transition: Remote -> Returned to Local Host ──
             unsafe {
+                // 1. Release pointer grab
                 x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+
+                // 2. Restore cursor to the freeze / return position
                 let fx = FREEZE_CURSOR_X.load(Ordering::Relaxed);
                 let fy = FREEZE_CURSOR_Y.load(Ordering::Relaxed);
-                if fx >= 0 && fy >= 0 {
-                    x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, fx, fy);
-                }
+                let restore_x = if fx >= 0 { fx } else { center_x };
+                let restore_y = if fy >= 0 { fy } else { center_y };
+
+                x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, restore_x, restore_y);
+                x11::xfixes::XFixesShowCursor(display, root);
                 x11::xlib::XFlush(display);
             }
             was_controlling = false;
         }
 
         if is_controlling {
-            // Process X events while pointer is grabbed
+            // Emergency Escape key check via XQueryKeymap
+            let mut keymap = [0u8; 32];
+            unsafe {
+                x11::xlib::XQueryKeymap(display, keymap.as_mut_ptr() as *mut i8);
+            }
+            let escape_keycode = unsafe { x11::xlib::XKeysymToKeycode(display, 0xff1b) }; // XK_Escape = 0xff1b
+            if escape_keycode > 0
+                && (keymap[(escape_keycode / 8) as usize] & (1 << (escape_keycode % 8))) != 0
+            {
+                info!("Emergency Escape pressed on Linux Host: releasing remote control");
+                FREEZE_CURSOR_X.store(-1, Ordering::Relaxed);
+                FREEZE_CURSOR_Y.store(-1, Ordering::Relaxed);
+                IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+                continue;
+            }
+
+            // Process captured input events
             unsafe {
                 while x11::xlib::XPending(display) > 0 {
                     let mut event: x11::xlib::XEvent = std::mem::zeroed();
@@ -479,9 +547,13 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
                             }
                         }
                         x11::xlib::MotionNotify => {
-                            let motion = event.motion;
-                            let dx = motion.x_root - center_x;
-                            let dy = motion.y_root - center_y;
+                            let cur_x = event.motion.x_root;
+                            let cur_y = event.motion.y_root;
+
+                            let dx = cur_x - last_x;
+                            let dy = cur_y - last_y;
+                            last_x = cur_x;
+                            last_y = cur_y;
 
                             if dx != 0 || dy != 0 {
                                 if let Some(tx) = HOOK_EVENT_TX.get() {
@@ -491,12 +563,28 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
                                         timestamp: 0,
                                     }));
                                 }
+                            }
 
-                                // Warp pointer back to center to prepare for next delta
+                            // Boundary Guard: Re-center ONLY when approaching screen borders
+                            // This ensures relative motion can continue indefinitely without clamping
+                            let margin = 100;
+                            if cur_x < margin
+                                || cur_x > screen_w - margin
+                                || cur_y < margin
+                                || cur_y > screen_h - margin
+                            {
                                 x11::xlib::XWarpPointer(
                                     display, 0, root, 0, 0, 0, 0, center_x, center_y,
                                 );
                                 x11::xlib::XFlush(display);
+                                last_x = center_x;
+                                last_y = center_y;
+
+                                // Drain the synthetic MotionNotify generated by the warp
+                                while x11::xlib::XPending(display) > 0 {
+                                    let mut discard: x11::xlib::XEvent = std::mem::zeroed();
+                                    x11::xlib::XNextEvent(display, &mut discard);
+                                }
                             }
                         }
                         _ => {}
@@ -505,15 +593,17 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
             }
         }
 
-        std::thread::sleep(Duration::from_millis(2));
+        std::thread::sleep(Duration::from_millis(1));
     }
 
-    // SAFETY: Clean ungrab and close display on shutdown
+    // SAFETY: Clean ungrab, restore cursor, and free resources on thread exit
     unsafe {
         if was_controlling {
             x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+            x11::xfixes::XFixesShowCursor(display, root);
             x11::xlib::XFlush(display);
         }
+        x11::xlib::XFreeCursor(display, blank_cursor);
         x11::xlib::XCloseDisplay(display);
     }
     info!("Linux X11 mouse capture thread stopped");
@@ -604,7 +694,9 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                             // Only inject into OS if we are NOT currently controlling remote
                             if !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
                                 match &event {
-                                    InputEvent::Mouse(MouseEvent::Button { button, state, .. }) => {
+                                    InputEvent::Mouse(MouseEvent::Button {
+                                        button, state, ..
+                                    }) => {
                                         if let Ok(mut app) = shared_state.lock() {
                                             app.add_log(
                                                 "INFO",
@@ -624,7 +716,9 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                     }
                                     InputEvent::Mouse(MouseEvent::MoveRel { .. }) => {
                                         client_move_count += 1;
-                                        if client_last_move_log.elapsed() >= Duration::from_millis(1000) {
+                                        if client_last_move_log.elapsed()
+                                            >= Duration::from_millis(1000)
+                                        {
                                             if let Some((cx, cy)) = get_local_cursor_pos() {
                                                 if let Ok(mut app) = shared_state.lock() {
                                                     app.add_log(
@@ -911,7 +1005,9 @@ fn run_mouse_router(
 
         // On Host: detect if active_id was changed via GUI (e.g. user clicked "Take Control" on Host)
         if active_id != local_id {
-            if current_target_device_id != active_id || !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+            if current_target_device_id != active_id
+                || !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed)
+            {
                 if let Some(target_dev) = connected_peers.iter().find(|d| d.id == active_id) {
                     target_ip = target_dev.ip_address.clone();
                     target_port = target_dev.port;
@@ -1165,12 +1261,16 @@ fn run_mouse_router(
                                         }
                                     }
 
-                                    FREEZE_CURSOR_X.store(-1, Ordering::Relaxed);
-                                    FREEZE_CURSOR_Y.store(-1, Ordering::Relaxed);
-                                    IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+                                    let local_entry_x =
+                                        ((entry_point.x * (screen_w - 1) as f32).round() as i32)
+                                            .clamp(0, screen_w - 1);
+                                    let local_entry_y =
+                                        ((entry_point.y * (screen_h - 1) as f32).round() as i32)
+                                            .clamp(0, screen_h - 1);
 
-                                    let local_entry_x = ((entry_point.x * (screen_w - 1) as f32).round() as i32).clamp(0, screen_w - 1);
-                                    let local_entry_y = ((entry_point.y * (screen_h - 1) as f32).round() as i32).clamp(0, screen_h - 1);
+                                    FREEZE_CURSOR_X.store(local_entry_x, Ordering::Relaxed);
+                                    FREEZE_CURSOR_Y.store(local_entry_y, Ordering::Relaxed);
+                                    IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
 
                                     set_local_cursor_pos(local_entry_x, local_entry_y);
 
@@ -1192,17 +1292,45 @@ fn run_mouse_router(
                                         app.persist_config();
                                     }
 
-                                        return_dwell_start = None;
-                                        break;
-                                    } else {
-                                        // ── CIRCULAR FORWARDING TO NEXT REMOTE DEVICE IN RING (e.g. C in A → B → C) ──
-                                        info!(
+                                    return_dwell_start = None;
+                                    break;
+                                } else {
+                                    // ── CIRCULAR FORWARDING TO NEXT REMOTE DEVICE IN RING (e.g. C in A → B → C) ──
+                                    info!(
                                             "Circular routing: virtual cursor on {} crossed {:?} edge → transferring to next peer {}",
                                             current_target_device_id, hit_edge, next_id
                                         );
 
-                                        // Release inputs on previous peer
-                                        if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
+                                    // Release inputs on previous peer
+                                    if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
+                                        let packet = NetworkPacket::new_control(bytes);
+                                        if let Ok(enc) = packet.encode() {
+                                            let dest = format!("{}:{}", target_ip, target_port);
+                                            let _ = send_socket.send_to(&enc, &dest);
+                                        }
+                                    }
+
+                                    let next_peer = {
+                                        let app = shared_state.lock().unwrap();
+                                        app.devices
+                                            .iter()
+                                            .find(|d| d.id == next_id && d.is_connected)
+                                            .cloned()
+                                    };
+
+                                    if let Some(next_dev) = next_peer {
+                                        target_ip = next_dev.ip_address.clone();
+                                        target_port = next_dev.port;
+                                        current_target_device_id = next_dev.id.clone();
+                                        remote_x = entry_point.x * remote_w;
+                                        remote_y = entry_point.y * remote_h;
+
+                                        // Send HandoffControl to new peer
+                                        let handoff = ControlMessage::HandoffControl {
+                                            entry_x_norm: entry_point.x,
+                                            entry_y_norm: entry_point.y,
+                                        };
+                                        if let Ok(bytes) = handoff.encode() {
                                             let packet = NetworkPacket::new_control(bytes);
                                             if let Ok(enc) = packet.encode() {
                                                 let dest = format!("{}:{}", target_ip, target_port);
@@ -1210,41 +1338,14 @@ fn run_mouse_router(
                                             }
                                         }
 
-                                        let next_peer = {
-                                            let app = shared_state.lock().unwrap();
-                                            app.devices
-                                                .iter()
-                                                .find(|d| d.id == next_id && d.is_connected)
-                                                .cloned()
-                                        };
-
-                                        if let Some(next_dev) = next_peer {
-                                            target_ip = next_dev.ip_address.clone();
-                                            target_port = next_dev.port;
-                                            current_target_device_id = next_dev.id.clone();
-                                            remote_x = entry_point.x * remote_w;
-                                            remote_y = entry_point.y * remote_h;
-
-                                            // Send HandoffControl to new peer
-                                            let handoff = ControlMessage::HandoffControl {
-                                                entry_x_norm: entry_point.x,
-                                                entry_y_norm: entry_point.y,
-                                            };
-                                            if let Ok(bytes) = handoff.encode() {
-                                                let packet = NetworkPacket::new_control(bytes);
-                                                if let Ok(enc) = packet.encode() {
-                                                    let dest = format!("{}:{}", target_ip, target_port);
-                                                    let _ = send_socket.send_to(&enc, &dest);
-                                                }
+                                        if let Ok(mut app) = shared_state.lock() {
+                                            app.active_device_id = current_target_device_id.clone();
+                                            app.topology
+                                                .set_active_device(&current_target_device_id);
+                                            for d in &mut app.devices {
+                                                d.is_active = d.id == current_target_device_id;
                                             }
-
-                                            if let Ok(mut app) = shared_state.lock() {
-                                                app.active_device_id = current_target_device_id.clone();
-                                                app.topology.set_active_device(&current_target_device_id);
-                                                for d in &mut app.devices {
-                                                    d.is_active = d.id == current_target_device_id;
-                                                }
-                                                app.add_log(
+                                            app.add_log(
                                                     "INFO",
                                                     "friday_core::ownership",
                                                     &format!(
@@ -1252,20 +1353,20 @@ fn run_mouse_router(
                                                         next_dev.name
                                                     ),
                                                 );
-                                                app.persist_config();
-                                            }
+                                            app.persist_config();
                                         }
-
-                                        return_dwell_start = None;
                                     }
+
+                                    return_dwell_start = None;
                                 }
                             }
-                        } else {
-                            return_dwell_start = None;
                         }
                     } else {
                         return_dwell_start = None;
                     }
+                } else {
+                    return_dwell_start = None;
+                }
 
                 // Send input packet over UDP to target peer
                 let packet = NetworkPacket::new_input(evt, seq);

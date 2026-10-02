@@ -71,6 +71,12 @@ pub fn detect_os_info() -> (String, String) {
     (os_str.to_string(), arch_str.to_string())
 }
 
+impl Default for AppState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AppState {
     pub fn new() -> Self {
         let config = ConfigManager::load_config();

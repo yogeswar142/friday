@@ -1,11 +1,11 @@
-/// Windows input injection backend using SendInput Win32 API.
-///
-/// SendInput is the correct Win32 API for synthesizing input at the hardware
-/// abstraction layer (HAL) level. It bypasses software hooks and reaches
-/// the raw input device queue, producing minimal latency.
-///
-/// SAFETY notes: All unsafe blocks wrap Win32 FFI calls with valid pointers
-/// and properly-sized structs. No raw memory aliasing occurs.
+//! Windows input injection backend using SendInput Win32 API.
+//!
+//! SendInput is the correct Win32 API for synthesizing input at the hardware
+//! abstraction layer (HAL) level. It bypasses software hooks and reaches
+//! the raw input device queue, producing minimal latency.
+//!
+//! SAFETY notes: All unsafe blocks wrap Win32 FFI calls with valid pointers
+//! and properly-sized structs. No raw memory aliasing occurs.
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -141,4 +141,3 @@ fn make_mouse_input(
         },
     }
 }
-

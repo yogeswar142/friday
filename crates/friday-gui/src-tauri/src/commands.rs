@@ -617,11 +617,7 @@ pub fn get_logs(state: State<'_, SharedAppState>) -> Vec<LogEntryDto> {
 pub fn clear_logs(state: State<'_, SharedAppState>) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     app.logs.clear();
-    app.add_log(
-        "INFO",
-        "friday_gui::diagnostics",
-        "Diagnostic logs cleared",
-    );
+    app.add_log("INFO", "friday_gui::diagnostics", "Diagnostic logs cleared");
     Ok(())
 }
 
@@ -929,7 +925,11 @@ pub fn set_device_role(is_host: bool, state: State<'_, SharedAppState>) -> Resul
         "friday_core::engine",
         &format!(
             "Device role switched to: {}",
-            if is_host { "Host (Controller)" } else { "Client (Receiver)" }
+            if is_host {
+                "Host (Controller)"
+            } else {
+                "Client (Receiver)"
+            }
         ),
     );
     app.persist_config();

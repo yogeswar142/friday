@@ -30,100 +30,129 @@ fn timestamp_ms() -> u32 {
         .as_millis() as u32
 }
 
+use std::cell::RefCell;
+
+struct DisplayGuard(*mut x11::xlib::Display);
+
+impl Drop for DisplayGuard {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: Closing persistent per-thread X display connection
+            unsafe {
+                x11::xlib::XCloseDisplay(self.0);
+            }
+        }
+    }
+}
+
+thread_local! {
+    static THREAD_DISPLAY: RefCell<Option<DisplayGuard>> = const { RefCell::new(None) };
+}
+
+/// Executes a closure using a thread-local cached X11 Display connection.
+/// Eliminates per-event socket connection creation and teardown overhead on the hot path.
+pub fn with_display<F, R>(f: F) -> AgentResult<R>
+where
+    F: FnOnce(*mut x11::xlib::Display) -> AgentResult<R>,
+{
+    THREAD_DISPLAY.with(|cell| {
+        let mut opt = cell.borrow_mut();
+        if opt.is_none() {
+            // SAFETY: XOpenDisplay connects to the default X server specified by $DISPLAY
+            let d = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
+            if d.is_null() {
+                return Err(AgentError::DisplayError(
+                    "Failed to open X display. Is DISPLAY set?".into(),
+                ));
+            }
+            *opt = Some(DisplayGuard(d));
+        }
+        let d = opt
+            .as_ref()
+            .map(|g| g.0)
+            .ok_or_else(|| AgentError::DisplayError("Failed to borrow cached X display".into()))?;
+        f(d)
+    })
+}
+
 /// Query real display resolution via xrandr-style Xlib calls
 pub fn query_display_info() -> AgentResult<DisplayBounds> {
-    // SAFETY: XOpenDisplay is safe to call; returns null on failure
-    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-    if display.is_null() {
-        return Err(AgentError::DisplayError(
-            "Failed to open X display. Is DISPLAY set?".into(),
-        ));
-    }
-    let screen = unsafe { x11::xlib::XDefaultScreen(display) };
-    let width = unsafe { x11::xlib::XDisplayWidth(display, screen) } as u32;
-    let height = unsafe { x11::xlib::XDisplayHeight(display, screen) } as u32;
-    let width_mm = unsafe { x11::xlib::XDisplayWidthMM(display, screen) } as f32;
+    with_display(|display| {
+        // SAFETY: Querying screen metrics on a valid open X display connection
+        unsafe {
+            let screen = x11::xlib::XDefaultScreen(display);
+            let width = x11::xlib::XDisplayWidth(display, screen) as u32;
+            let height = x11::xlib::XDisplayHeight(display, screen) as u32;
+            let width_mm = x11::xlib::XDisplayWidthMM(display, screen) as f32;
 
-    // Approximate DPI from physical display width
-    let dpi = if width_mm > 0.0 {
-        (width as f32 / width_mm) * 25.4
-    } else {
-        96.0
-    };
-    let scale_factor = (dpi / 96.0).max(1.0);
+            let dpi = if width_mm > 0.0 {
+                (width as f32 / width_mm) * 25.4
+            } else {
+                96.0
+            };
+            let scale_factor = (dpi / 96.0).max(1.0);
 
-    unsafe { x11::xlib::XCloseDisplay(display) };
-
-    Ok(DisplayBounds::new(0, 0, width, height, scale_factor, true))
+            Ok(DisplayBounds::new(0, 0, width, height, scale_factor, true))
+        }
+    })
 }
 
 /// Get current cursor position from X server
 pub fn get_cursor_position() -> AgentResult<(i32, i32)> {
-    // SAFETY: safe Xlib call sequence
-    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-    if display.is_null() {
-        return Err(AgentError::DisplayError("Cannot open X display".into()));
-    }
+    with_display(|display| {
+        // SAFETY: XQueryPointer with valid stack allocated return pointers
+        unsafe {
+            let screen = x11::xlib::XDefaultScreen(display);
+            let root = x11::xlib::XRootWindow(display, screen);
 
-    let screen = unsafe { x11::xlib::XDefaultScreen(display) };
-    let root = unsafe { x11::xlib::XRootWindow(display, screen) };
+            let mut root_ret = 0u64;
+            let mut child_ret = 0u64;
+            let mut root_x = 0i32;
+            let mut root_y = 0i32;
+            let mut win_x = 0i32;
+            let mut win_y = 0i32;
+            let mut mask = 0u32;
 
-    let mut root_ret = 0u64;
-    let mut child_ret = 0u64;
-    let mut root_x = 0i32;
-    let mut root_y = 0i32;
-    let mut win_x = 0i32;
-    let mut win_y = 0i32;
-    let mut mask = 0u32;
+            x11::xlib::XQueryPointer(
+                display,
+                root,
+                &mut root_ret,
+                &mut child_ret,
+                &mut root_x,
+                &mut root_y,
+                &mut win_x,
+                &mut win_y,
+                &mut mask,
+            );
 
-    // SAFETY: XQueryPointer is standard Xlib; all pointers are valid stack variables
-    unsafe {
-        x11::xlib::XQueryPointer(
-            display,
-            root,
-            &mut root_ret,
-            &mut child_ret,
-            &mut root_x,
-            &mut root_y,
-            &mut win_x,
-            &mut win_y,
-            &mut mask,
-        );
-        x11::xlib::XCloseDisplay(display);
-    }
-
-    Ok((root_x, root_y))
+            Ok((root_x, root_y))
+        }
+    })
 }
 
 /// Inject a mouse movement (absolute position) via XTest
 pub fn inject_move_abs(x: i32, y: i32) -> AgentResult<()> {
-    // SAFETY: XTest is standard extension; display pointer valid within scope
-    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-    if display.is_null() {
-        return Err(AgentError::InjectionError("Cannot open X display".into()));
-    }
-    let screen = unsafe { x11::xlib::XDefaultScreen(display) };
-    unsafe {
-        x11::xtest::XTestFakeMotionEvent(display, screen, x, y, 0);
-        x11::xlib::XFlush(display);
-        x11::xlib::XCloseDisplay(display);
-    }
-    Ok(())
+    with_display(|display| {
+        // SAFETY: XTestFakeMotionEvent on open cached X display
+        unsafe {
+            let screen = x11::xlib::XDefaultScreen(display);
+            x11::xtest::XTestFakeMotionEvent(display, screen, x, y, 0);
+            x11::xlib::XFlush(display);
+        }
+        Ok(())
+    })
 }
 
 /// Inject a relative mouse movement via XTest
 pub fn inject_move_rel(dx: i32, dy: i32) -> AgentResult<()> {
-    // SAFETY: same as inject_move_abs
-    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-    if display.is_null() {
-        return Err(AgentError::InjectionError("Cannot open X display".into()));
-    }
-    unsafe {
-        x11::xtest::XTestFakeRelativeMotionEvent(display, dx, dy, 0, 0);
-        x11::xlib::XFlush(display);
-        x11::xlib::XCloseDisplay(display);
-    }
-    Ok(())
+    with_display(|display| {
+        // SAFETY: XTestFakeRelativeMotionEvent on open cached X display
+        unsafe {
+            x11::xtest::XTestFakeRelativeMotionEvent(display, dx, dy, 0, 0);
+            x11::xlib::XFlush(display);
+        }
+        Ok(())
+    })
 }
 
 fn mouse_button_to_x11(button: MouseButton) -> u32 {
@@ -139,49 +168,42 @@ fn mouse_button_to_x11(button: MouseButton) -> u32 {
 
 /// Inject a mouse button event via XTest
 pub fn inject_button(button: MouseButton, pressed: bool) -> AgentResult<()> {
-    // SAFETY: XTestFakeButtonEvent is standard; display pointer valid within scope
-    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-    if display.is_null() {
-        return Err(AgentError::InjectionError("Cannot open X display".into()));
-    }
-    let x11_btn = mouse_button_to_x11(button);
-    unsafe {
-        x11::xtest::XTestFakeButtonEvent(display, x11_btn, pressed as i32, 0);
-        x11::xlib::XFlush(display);
-        x11::xlib::XCloseDisplay(display);
-    }
-    Ok(())
+    with_display(|display| {
+        let x11_btn = mouse_button_to_x11(button);
+        // SAFETY: XTestFakeButtonEvent on open cached X display
+        unsafe {
+            x11::xtest::XTestFakeButtonEvent(display, x11_btn, pressed as i32, 0);
+            x11::xlib::XFlush(display);
+        }
+        Ok(())
+    })
 }
 
 /// Inject scroll wheel events (button 4=up, 5=down, 6=left, 7=right)
 pub fn inject_scroll(dx: i16, dy: i16) -> AgentResult<()> {
-    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
-    if display.is_null() {
-        return Err(AgentError::InjectionError("Cannot open X display".into()));
-    }
-    unsafe {
-        // Vertical scroll: button 4 (up) or 5 (down)
-        if dy != 0 {
-            let btn = if dy < 0 { 4u32 } else { 5u32 };
-            let count = dy.unsigned_abs() as u32;
-            for _ in 0..count {
-                x11::xtest::XTestFakeButtonEvent(display, btn, 1, 0);
-                x11::xtest::XTestFakeButtonEvent(display, btn, 0, 0);
+    with_display(|display| {
+        // SAFETY: XTest scroll wheel simulation via button press/release
+        unsafe {
+            if dy != 0 {
+                let btn = if dy < 0 { 4u32 } else { 5u32 };
+                let count = dy.unsigned_abs() as u32;
+                for _ in 0..count {
+                    x11::xtest::XTestFakeButtonEvent(display, btn, 1, 0);
+                    x11::xtest::XTestFakeButtonEvent(display, btn, 0, 0);
+                }
             }
-        }
-        // Horizontal scroll: button 6 (left) or 7 (right)
-        if dx != 0 {
-            let btn = if dx < 0 { 6u32 } else { 7u32 };
-            let count = dx.unsigned_abs() as u32;
-            for _ in 0..count {
-                x11::xtest::XTestFakeButtonEvent(display, btn, 1, 0);
-                x11::xtest::XTestFakeButtonEvent(display, btn, 0, 0);
+            if dx != 0 {
+                let btn = if dx < 0 { 6u32 } else { 7u32 };
+                let count = dx.unsigned_abs() as u32;
+                for _ in 0..count {
+                    x11::xtest::XTestFakeButtonEvent(display, btn, 1, 0);
+                    x11::xtest::XTestFakeButtonEvent(display, btn, 0, 0);
+                }
             }
+            x11::xlib::XFlush(display);
         }
-        x11::xlib::XFlush(display);
-        x11::xlib::XCloseDisplay(display);
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 /// Inject any InputEvent received from network into the local X display

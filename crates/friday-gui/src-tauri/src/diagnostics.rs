@@ -138,8 +138,8 @@ pub fn run_core_benchmark() -> BenchmarkReportDto {
     let bounds = DisplayBounds::new(0, 0, 1920, 1080, 1.0, true);
     let t1 = Instant::now();
     for i in 0..iterations {
-        let x = (i % 1920) as i32;
-        let y = (i % 1080) as i32;
+        let x = i % 1920;
+        let y = i % 1080;
         let _ = bounds.to_normalized(x, y);
     }
     let coord_ns = (t1.elapsed().as_nanos() as f64) / (iterations as f64);

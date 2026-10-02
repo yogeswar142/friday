@@ -228,7 +228,7 @@ async fn run_sender(
     bind_addr: &str,
     peer_addr: &str,
     direct: bool,
-    edge_px: i32,
+    _edge_px: i32,
     dwell_ms: u64,
     remote_w: u32,
     remote_h: u32,
@@ -252,9 +252,11 @@ async fn run_sender(
     let is_remote_active = Arc::new(AtomicBool::new(direct));
 
     // Input event channel: capture → sender_loop
+    #[allow(unused_variables)]
     let (input_tx, input_rx) = mpsc::channel::<friday_core::InputEvent>(256);
 
     // Edge trigger channel
+    #[allow(unused_variables)]
     let (edge_tx, mut edge_rx) = mpsc::channel::<EdgeTrigger>(16);
 
     let seq = Arc::new(AtomicU32::new(0));
@@ -280,7 +282,7 @@ async fn run_sender(
                 input_tx,
                 stop,
                 remote_active_clone,
-                edge_px,
+                _edge_px,
                 screen_w,
                 screen_h,
                 edge_tx,
@@ -361,7 +363,7 @@ async fn run_sender(
 async fn run_connect(
     bind_addr: &str,
     peer_addr: &str,
-    edge_px: i32,
+    _edge_px: i32,
     dwell_ms: u64,
 ) -> Result<(), Box<dyn std::error::Error>> {
     info!("FRIDAY Agent — CONNECT mode (circular edge handoff)");
@@ -382,7 +384,9 @@ async fn run_connect(
     session.set_mode(SessionMode::Sender).await;
     session.set_dwell_ms(dwell_ms);
 
+    #[allow(unused_variables)]
     let (input_tx, input_rx) = mpsc::channel::<friday_core::InputEvent>(512);
+    #[allow(unused_variables)]
     let (edge_tx, mut edge_rx) = mpsc::channel::<EdgeTrigger>(32);
     let seq = Arc::new(AtomicU32::new(0));
 
@@ -394,6 +398,7 @@ async fn run_connect(
         sender_loop(input_rx, tx_cl, sess_cl, seq_cl).await;
     });
 
+    #[allow(unused_variables)]
     let is_remote_active = Arc::new(AtomicBool::new(false));
 
     friday_agent::logger::init_session_log();
@@ -411,7 +416,7 @@ async fn run_connect(
                 input_tx,
                 stop,
                 remote_active_clone,
-                edge_px,
+                _edge_px,
                 screen_w,
                 screen_h,
                 edge_tx,
