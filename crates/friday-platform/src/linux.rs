@@ -1,6 +1,6 @@
-use async_trait::async_trait;
-use friday_core::{DisplayBounds, InputEvent, Result, CoreError};
 use crate::traits::{CursorBackend, EventCallback, InputBackend, ScreenBackend};
+use async_trait::async_trait;
+use friday_core::{CoreError, DisplayBounds, InputEvent, Result};
 
 #[derive(Debug, Clone)]
 pub struct LinuxPlatformBackend {
@@ -10,7 +10,9 @@ pub struct LinuxPlatformBackend {
 impl LinuxPlatformBackend {
     pub fn new() -> Self {
         let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok()
-            || std::env::var("XDG_SESSION_TYPE").map(|v| v == "wayland").unwrap_or(false);
+            || std::env::var("XDG_SESSION_TYPE")
+                .map(|v| v == "wayland")
+                .unwrap_or(false);
         Self { is_wayland }
     }
 }
@@ -51,7 +53,10 @@ impl ScreenBackend for LinuxPlatformBackend {
 
     async fn get_primary_display(&self) -> Result<DisplayBounds> {
         let displays = self.get_displays().await?;
-        displays.into_iter().next().ok_or_else(|| CoreError::RouterError("No display found".into()))
+        displays
+            .into_iter()
+            .next()
+            .ok_or_else(|| CoreError::RouterError("No display found".into()))
     }
 }
 

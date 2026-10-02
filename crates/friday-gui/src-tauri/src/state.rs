@@ -1,7 +1,9 @@
-use std::sync::{Arc, Mutex};
-use friday_core::{DisplayBounds, ScreenLayout, CircularTopology};
 use crate::config::ConfigManager;
-use crate::types::{DeviceInfo, DiscoveredDevice, EngineStatus, LogEntryDto, SettingsDto, TelemetryDto};
+use crate::types::{
+    DeviceInfo, DiscoveredDevice, EngineStatus, LogEntryDto, SettingsDto, TelemetryDto,
+};
+use friday_core::{CircularTopology, DisplayBounds, ScreenLayout};
+use std::sync::{Arc, Mutex};
 
 pub struct AppState {
     pub engine_running: bool,
@@ -20,15 +22,21 @@ pub struct AppState {
 pub fn detect_local_hostname() -> String {
     if let Ok(name) = std::env::var("COMPUTERNAME") {
         let trimmed = name.trim();
-        if !trimmed.is_empty() { return trimmed.to_string(); }
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
     }
     if let Ok(name) = std::env::var("HOSTNAME") {
         let trimmed = name.trim();
-        if !trimmed.is_empty() { return trimmed.to_string(); }
+        if !trimmed.is_empty() {
+            return trimmed.to_string();
+        }
     }
     if let Ok(out) = std::process::Command::new("hostname").output() {
         let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if !s.is_empty() { return s; }
+        if !s.is_empty() {
+            return s;
+        }
     }
     "Local-PC".to_string()
 }
@@ -80,7 +88,11 @@ impl AppState {
             is_active: true,
             is_connected: true,
             latency_ms: 0.0,
-            capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
+            capabilities: vec![
+                "mouse_capture".into(),
+                "mouse_injection".into(),
+                "edge_detection".into(),
+            ],
         };
 
         let mut devices = vec![local_device];
@@ -97,13 +109,14 @@ impl AppState {
             ring = devices.iter().map(|d| d.id.clone()).collect();
         }
 
-        let layouts: Vec<ScreenLayout> = devices.iter().map(|d| {
-            ScreenLayout {
+        let layouts: Vec<ScreenLayout> = devices
+            .iter()
+            .map(|d| ScreenLayout {
                 device_id: d.id.clone(),
                 name: d.name.clone(),
                 bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, d.is_local),
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut ct = CircularTopology::from_ring(layouts);
         ct.set_ring(ring.clone());
@@ -114,7 +127,10 @@ impl AppState {
             timestamp: chrono_now(),
             level: "INFO".into(),
             target: "friday_core::engine".into(),
-            message: format!("FRIDAY initialized on local machine: {} ({})", local_id, local_ip),
+            message: format!(
+                "FRIDAY initialized on local machine: {} ({})",
+                local_id, local_ip
+            ),
         });
         if ring.len() >= 2 {
             logs.push(LogEntryDto {
@@ -150,12 +166,16 @@ impl AppState {
     pub fn persist_config(&self) {
         let app_cfg = crate::config::AppConfig {
             settings: self.settings.clone(),
-            paired_devices: self.devices.iter().filter(|d| !d.is_local).cloned().collect(),
+            paired_devices: self
+                .devices
+                .iter()
+                .filter(|d| !d.is_local)
+                .cloned()
+                .collect(),
             ring_topology: self.topology.ring.clone(),
         };
         let _ = ConfigManager::save_config(&app_cfg);
     }
-
 
     pub fn get_engine_status(&self) -> EngineStatus {
         let state = if !self.engine_running {
@@ -169,7 +189,11 @@ impl AppState {
         let summary = if self.topology.ring.is_empty() {
             "No devices configured".to_string()
         } else {
-            format!("{} → {}", self.topology.ring.join(" → "), self.topology.ring[0])
+            format!(
+                "{} → {}",
+                self.topology.ring.join(" → "),
+                self.topology.ring[0]
+            )
         };
 
         EngineStatus {
@@ -177,7 +201,11 @@ impl AppState {
             active_device_id: self.active_device_id.clone(),
             local_device_id: self.local_device_id.clone(),
             connected_count: self.devices.iter().filter(|d| d.is_connected).count(),
-            network_state: if self.engine_running { "Connected".into() } else { "Disconnected".into() },
+            network_state: if self.engine_running {
+                "Connected".into()
+            } else {
+                "Disconnected".into()
+            },
             latency_ms: self.telemetry.latency_ms,
             packet_loss_pct: self.telemetry.packet_loss_pct,
             packets_transferred: self.telemetry.total_transfers * 128,
@@ -243,4 +271,3 @@ mod tests {
         assert_eq!(state.logs.len(), 1000);
     }
 }
-

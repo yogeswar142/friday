@@ -10,7 +10,6 @@
 ///   XTestFakeMotionEvent for absolute cursor placement
 ///   XTestFakeButtonEvent for mouse button press/release
 ///   XTestFakeRelativeMotionEvent for relative move injection
-
 use std::sync::{
     atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering},
     Arc,
@@ -417,7 +416,9 @@ pub fn capture_loop(
                                 }));
 
                                 // Warp pointer back to center to prepare for next delta
-                                x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, center_x, center_y);
+                                x11::xlib::XWarpPointer(
+                                    display, 0, root, 0, 0, 0, 0, center_x, center_y,
+                                );
                                 x11::xlib::XFlush(display);
                             }
                         }
@@ -601,13 +602,7 @@ pub fn capture_loop(
     session_log("Capture loop stopped cleanly.");
 }
 
-fn detect_edge(
-    x: i32,
-    y: i32,
-    screen_w: i32,
-    screen_h: i32,
-    threshold: i32,
-) -> Option<ScreenEdge> {
+fn detect_edge(x: i32, y: i32, screen_w: i32, screen_h: i32, threshold: i32) -> Option<ScreenEdge> {
     if x <= threshold {
         Some(ScreenEdge::Left)
     } else if x >= screen_w - 1 - threshold {

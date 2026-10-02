@@ -27,12 +27,13 @@
 ///   [Initiator receives reply]
 ///     → Ok(true) if ACCEPT, Ok(false) if REJECT or timeout
 ///     → pair_device() called automatically on accept
-
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tracing::{info, warn};
+
+use crate::state::SharedAppState;
 
 /// Port the remote device listens on for incoming pair requests
 pub const PAIR_REQUEST_PORT: u16 = 48702;
@@ -70,18 +71,15 @@ pub fn remove_pending(pin: &str) {
 /// Quick UDP probe — sends a FRIDAY_PAIR_PROBE and expects FRIDAY_PAIR_PROBE_ACK within 3s.
 /// Returns Ok(()) if reachable, Err(message) with actionable text if not.
 pub fn probe_pairing_port(target_ip: &str) -> Result<(), String> {
-    let reply_socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Cannot bind probe socket: {}", e))?;
+    let reply_socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind probe socket: {}", e))?;
     reply_socket
         .set_read_timeout(Some(Duration::from_secs(3)))
         .ok();
-    let reply_port = reply_socket
-        .local_addr()
-        .map(|a| a.port())
-        .unwrap_or(0);
+    let reply_port = reply_socket.local_addr().map(|a| a.port()).unwrap_or(0);
 
-    let send_socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Cannot bind send socket: {}", e))?;
+    let send_socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind send socket: {}", e))?;
     let dest = format!("{}:{}", target_ip, PAIR_REQUEST_PORT);
     let msg = format!("FRIDAY_PAIR_PROBE:{}", reply_port);
     send_socket
@@ -121,10 +119,11 @@ pub fn send_pairing_request(
     local_id: &str,
     local_name: &str,
     pin: &str,
+    state: &SharedAppState,
 ) -> Result<bool, String> {
     // Bind reply listener on an ephemeral OS-assigned port
-    let reply_socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Cannot bind reply socket: {}", e))?;
+    let reply_socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind reply socket: {}", e))?;
     reply_socket
         .set_read_timeout(Some(Duration::from_secs(30)))
         .ok();
@@ -136,8 +135,8 @@ pub fn send_pairing_request(
         .port();
 
     // Send request — include reply_port so remote knows where to send the ACK
-    let send_socket = UdpSocket::bind("0.0.0.0:0")
-        .map_err(|e| format!("Send socket bind failed: {}", e))?;
+    let send_socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Send socket bind failed: {}", e))?;
     let dest = format!("{}:{}", target_ip, PAIR_REQUEST_PORT);
     // Format: FRIDAY_PAIR_REQUEST:<pin>:<from_id>:<from_name>:<reply_port>
     let msg = format!(
@@ -153,6 +152,24 @@ pub fn send_pairing_request(
         "Pairing request sent to {} — PIN={} reply_port={}",
         dest, pin, reply_port
     );
+    if let Ok(mut app) = state.lock() {
+        app.add_log(
+            "INFO",
+            "friday_network::pairing",
+            &format!(
+                "▶ Pairing request sent to {}:{} | PIN={} | local_reply_port={}",
+                target_ip, PAIR_REQUEST_PORT, pin, reply_port
+            ),
+        );
+        app.add_log(
+            "INFO",
+            "friday_network::pairing",
+            &format!(
+                "⏳ Waiting up to 30s for {} to accept/reject PIN={}...",
+                target_ip, pin
+            ),
+        );
+    }
 
     // Wait for FRIDAY_PAIR_ACCEPT:<pin> or FRIDAY_PAIR_REJECT:<pin>
     let mut buf = [0u8; 256];
@@ -164,7 +181,51 @@ pub fn send_pairing_request(
             if reply.starts_with("FRIDAY_PAIR_ACCEPT:") {
                 let reply_pin = reply.trim_start_matches("FRIDAY_PAIR_ACCEPT:").trim();
                 if reply_pin == pin {
+                    if let Ok(mut app) = state.lock() {
+                        app.add_log(
+                            "INFO",
+                            "friday_network::pairing",
+                            &format!(
+                                "✅ ACCEPTED by {} ({}): PIN={} confirmed — pairing successful!",
+                                target_ip, src, pin
+                            ),
+                        );
+                    }
                     return Ok(true);
+                } else {
+                    // PIN mismatch — treat as reject
+                    if let Ok(mut app) = state.lock() {
+                        app.add_log(
+                            "WARN",
+                            "friday_network::pairing",
+                            &format!(
+                                "⚠ PIN mismatch from {}: expected={} got={} — treating as reject",
+                                src, pin, reply_pin
+                            ),
+                        );
+                    }
+                }
+            } else if reply.starts_with("FRIDAY_PAIR_REJECT:") {
+                if let Ok(mut app) = state.lock() {
+                    app.add_log(
+                        "WARN",
+                        "friday_network::pairing",
+                        &format!(
+                            "❌ REJECTED by {} ({}): The remote user clicked Reject for PIN={}",
+                            target_ip, src, pin
+                        ),
+                    );
+                }
+            } else {
+                if let Ok(mut app) = state.lock() {
+                    app.add_log(
+                        "WARN",
+                        "friday_network::pairing",
+                        &format!(
+                            "⚠ Unexpected reply from {} ({}): {:?}",
+                            target_ip, src, reply
+                        ),
+                    );
                 }
             }
             // REJECT or wrong PIN
@@ -172,6 +233,23 @@ pub fn send_pairing_request(
         }
         Err(e) => {
             warn!("Pairing timed out or error (30s): {}", e);
+            if let Ok(mut app) = state.lock() {
+                app.add_log(
+                    "WARN",
+                    "friday_network::pairing",
+                    &format!(
+                        "⏱ No response from {} within 30s for PIN={} — timed out ({})",
+                        target_ip, pin, e
+                    ),
+                );
+                app.add_log(
+                    "INFO",
+                    "friday_network::pairing",
+                    "ℹ  Possible causes: (1) The remote user did not click Accept in time  \
+                     (2) The Accept notification wasn't shown on remote — check remote logs  \
+                     (3) Remote Friday app closed or crashed after the probe",
+                );
+            }
             Ok(false)
         }
     }
@@ -267,8 +345,7 @@ pub fn start_pairing_responder(stop_flag: Arc<AtomicBool>) {
 
 /// Send Accept or Reject reply directly to the initiator's ephemeral reply port
 pub fn respond_to_request(request: &PendingPairRequest, accept: bool) -> Result<(), String> {
-    let socket =
-        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Bind failed: {}", e))?;
+    let socket = UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Bind failed: {}", e))?;
 
     // Reply directly to the port the initiator is listening on
     let dest = format!("{}:{}", request.from_ip, request.reply_port);
@@ -278,16 +355,14 @@ pub fn respond_to_request(request: &PendingPairRequest, accept: bool) -> Result<
         format!("FRIDAY_PAIR_REJECT:{}", request.pin)
     };
 
-    socket
-        .send_to(msg.as_bytes(), &dest)
-        .map_err(|e| {
-            format!(
-                "Failed to send pairing {} to {}: {}",
-                if accept { "ACCEPT" } else { "REJECT" },
-                dest,
-                e
-            )
-        })?;
+    socket.send_to(msg.as_bytes(), &dest).map_err(|e| {
+        format!(
+            "Failed to send pairing {} to {}: {}",
+            if accept { "ACCEPT" } else { "REJECT" },
+            dest,
+            e
+        )
+    })?;
 
     info!(
         "Sent pairing {} to {}",

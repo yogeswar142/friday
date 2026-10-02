@@ -1,6 +1,6 @@
+use crate::traits::{CursorBackend, EventCallback, InputBackend, ScreenBackend};
 use async_trait::async_trait;
 use friday_core::{DisplayBounds, InputEvent, Result};
-use crate::traits::{CursorBackend, EventCallback, InputBackend, ScreenBackend};
 
 #[derive(Debug, Clone, Default)]
 pub struct MacOSPlatformBackend;

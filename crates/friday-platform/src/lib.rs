@@ -1,14 +1,14 @@
-pub mod traits;
-pub mod mock;
 pub mod linux;
-pub mod windows;
 pub mod macos;
+pub mod mock;
+pub mod traits;
+pub mod windows;
 
-pub use traits::{CursorBackend, EventCallback, InputBackend, ScreenBackend};
-pub use mock::MockPlatformBackend;
 pub use linux::LinuxPlatformBackend;
-pub use windows::WindowsPlatformBackend;
 pub use macos::MacOSPlatformBackend;
+pub use mock::MockPlatformBackend;
+pub use traits::{CursorBackend, EventCallback, InputBackend, ScreenBackend};
+pub use windows::WindowsPlatformBackend;
 
 /// Instantiates the active platform backend for the target OS
 pub fn get_native_backend() -> std::sync::Arc<dyn InputBackend> {

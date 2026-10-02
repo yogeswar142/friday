@@ -22,7 +22,10 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
                 os,
                 arch,
                 app.settings.peer_port,
-                app.devices.first().map(|d| d.ip_address.clone()).unwrap_or_else(detect_local_ip),
+                app.devices
+                    .first()
+                    .map(|d| d.ip_address.clone())
+                    .unwrap_or_else(detect_local_ip),
             )
         };
 
@@ -45,10 +48,16 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
         let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
 
         // Broadcast initial presence announcement to local subnet
-        let announce_msg = format!("FRIDAY_NODE_ANNOUNCE:{}:{}:{}:{}:{}", local_id, local_name, os, arch, port);
+        let announce_msg = format!(
+            "FRIDAY_NODE_ANNOUNCE:{}:{}:{}:{}:{}",
+            local_id, local_name, os, arch, port
+        );
         broadcast_discovery_packet(&socket, announce_msg.as_bytes(), &local_ip, DISCOVERY_PORT);
 
-        info!("FRIDAY Discovery Service active on UDP port {}", DISCOVERY_PORT);
+        info!(
+            "FRIDAY Discovery Service active on UDP port {}",
+            DISCOVERY_PORT
+        );
 
         let mut buf = [0u8; 512];
         let mut last_heartbeat = Instant::now();
@@ -56,7 +65,10 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
         while !stop_flag.load(Ordering::Relaxed) {
             // Periodic broadcast announce every 8 seconds
             if last_heartbeat.elapsed() > Duration::from_secs(8) {
-                let msg = format!("FRIDAY_NODE_ANNOUNCE:{}:{}:{}:{}:{}", local_id, local_name, os, arch, port);
+                let msg = format!(
+                    "FRIDAY_NODE_ANNOUNCE:{}:{}:{}:{}:{}",
+                    local_id, local_name, os, arch, port
+                );
                 broadcast_discovery_packet(&socket, msg.as_bytes(), &local_ip, DISCOVERY_PORT);
                 last_heartbeat = Instant::now();
             }
@@ -64,11 +76,14 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
             match socket.recv_from(&mut buf) {
                 Ok((len, src)) => {
                     let msg = String::from_utf8_lossy(&buf[..len]);
-                    
+
                     if msg.starts_with("FRIDAY_DISCOVERY_PING:") {
                         let requester_id = msg.trim_start_matches("FRIDAY_DISCOVERY_PING:").trim();
                         if requester_id != local_id {
-                            let reply = format!("FRIDAY_NODE:{}:{}:{}:{}:{}", local_id, local_name, os, arch, port);
+                            let reply = format!(
+                                "FRIDAY_NODE:{}:{}:{}:{}:{}",
+                                local_id, local_name, os, arch, port
+                            );
                             let _ = socket.send_to(reply.as_bytes(), src);
                         }
                     } else if msg.starts_with("FRIDAY_NODE_ANNOUNCE:") {
@@ -82,8 +97,12 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
                             let peer_ip = src.ip().to_string();
 
                             let mut app = state.lock().unwrap();
-                            let already_paired = app.devices.iter().any(|d| d.id == peer_id || d.ip_address == peer_ip);
-                            let already_discovered = app.discovered_devices.iter().any(|d| d.id == peer_id);
+                            let already_paired = app
+                                .devices
+                                .iter()
+                                .any(|d| d.id == peer_id || d.ip_address == peer_ip);
+                            let already_discovered =
+                                app.discovered_devices.iter().any(|d| d.id == peer_id);
 
                             if !already_paired && !already_discovered {
                                 app.discovered_devices.push(DiscoveredDevice {
@@ -108,7 +127,12 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
 }
 
 /// Broadcast a packet to 255.255.255.255 and the local subnet broadcast address
-pub fn broadcast_discovery_packet(socket: &UdpSocket, data: &[u8], local_ip: &str, target_port: u16) {
+pub fn broadcast_discovery_packet(
+    socket: &UdpSocket,
+    data: &[u8],
+    local_ip: &str,
+    target_port: u16,
+) {
     let global_bcast = format!("255.255.255.255:{}", target_port);
     let _ = socket.send_to(data, &global_bcast);
 
@@ -121,7 +145,10 @@ pub fn broadcast_discovery_packet(socket: &UdpSocket, data: &[u8], local_ip: &st
 pub fn compute_subnet_broadcast(ip_str: &str, port: u16) -> Option<String> {
     let parts: Vec<&str> = ip_str.split('.').collect();
     if parts.len() == 4 {
-        Some(format!("{}.{}.{}.255:{}", parts[0], parts[1], parts[2], port))
+        Some(format!(
+            "{}.{}.{}.255:{}",
+            parts[0], parts[1], parts[2], port
+        ))
     } else {
         None
     }
@@ -133,7 +160,10 @@ pub fn scan_local_subnet(state: SharedAppState) -> Vec<DiscoveredDevice> {
         let app = state.lock().unwrap();
         (
             app.local_device_id.clone(),
-            app.devices.first().map(|d| d.ip_address.clone()).unwrap_or_else(detect_local_ip),
+            app.devices
+                .first()
+                .map(|d| d.ip_address.clone())
+                .unwrap_or_else(detect_local_ip),
         )
     };
 
@@ -186,7 +216,11 @@ pub fn scan_local_subnet(state: SharedAppState) -> Vec<DiscoveredDevice> {
 
     let mut app = state.lock().unwrap();
     // Filter out already paired devices
-    found.retain(|f| !app.devices.iter().any(|d| d.id == f.id || d.ip_address == f.ip_address));
+    found.retain(|f| {
+        !app.devices
+            .iter()
+            .any(|d| d.id == f.id || d.ip_address == f.ip_address)
+    });
     app.discovered_devices = found.clone();
     found
 }

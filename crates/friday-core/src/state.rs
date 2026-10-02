@@ -1,7 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use serde::{Deserialize, Serialize};
-use crate::events::{ElementState, InputEvent, KeyCode, MouseButton, MouseEvent, KeyboardEvent};
 use crate::coordinates::NormalizedPoint;
+use crate::events::{ElementState, InputEvent, KeyCode, KeyboardEvent, MouseButton, MouseEvent};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 /// Memory tracking last cursor positions per device
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

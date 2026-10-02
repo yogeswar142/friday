@@ -11,7 +11,6 @@
 ///   Receiver: receives from peer, injects into local OS
 ///
 /// The session transitions automatically on edge crossing.
-
 use std::{
     net::SocketAddr,
     sync::{
@@ -26,7 +25,10 @@ use friday_network::{NetworkPacket, NetworkTransport, PacketPayload};
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
-use crate::{control::ControlMessage, error::{AgentError, Result}};
+use crate::{
+    control::ControlMessage,
+    error::{AgentError, Result},
+};
 
 /// How long without a packet before considering connection dead
 const HEARTBEAT_TIMEOUT_MS: u64 = 3000;
@@ -106,7 +108,9 @@ async fn send_control(
     peer: SocketAddr,
     msg: &ControlMessage,
 ) -> Result<()> {
-    let payload = msg.encode().map_err(|e| AgentError::NetworkError(e.to_string()))?;
+    let payload = msg
+        .encode()
+        .map_err(|e| AgentError::NetworkError(e.to_string()))?;
     let packet = NetworkPacket::new_control(payload);
     let bytes = packet
         .encode()
@@ -188,7 +192,9 @@ pub async fn sender_loop(
 
         // Heartbeat every 500ms while in sender mode
         if heartbeat_timer.elapsed() > Duration::from_millis(HEARTBEAT_INTERVAL_MS) {
-            let ping = ControlMessage::Ping { seq: seq.load(Ordering::Relaxed) };
+            let ping = ControlMessage::Ping {
+                seq: seq.load(Ordering::Relaxed),
+            };
             let _ = send_control(&transport, peer, &ping).await;
             heartbeat_timer = Instant::now();
         }
@@ -204,10 +210,7 @@ pub async fn sender_loop(
 ///
 /// When the peer sends HandoffControl, we switch to Sender mode.
 /// When we reach an edge, we send HandoffControl back.
-pub async fn receiver_loop(
-    transport: Arc<NetworkTransport>,
-    session: SessionHandle,
-) {
+pub async fn receiver_loop(transport: Arc<NetworkTransport>, session: SessionHandle) {
     info!("Receiver loop started — accepting remote input");
     let mut last_packet_time = Instant::now();
     let mut received_count = 0u64;
@@ -219,12 +222,7 @@ pub async fn receiver_loop(
         }
 
         // Non-blocking recv with timeout
-        match tokio::time::timeout(
-            Duration::from_millis(100),
-            transport.recv_packet(),
-        )
-        .await
-        {
+        match tokio::time::timeout(Duration::from_millis(100), transport.recv_packet()).await {
             Ok(Ok((packet, src_addr))) => {
                 last_packet_time = Instant::now();
                 received_count += 1;
@@ -270,7 +268,10 @@ pub async fn receiver_loop(
         }
     }
 
-    info!("Receiver loop stopped. Total events received: {}", received_count);
+    info!(
+        "Receiver loop stopped. Total events received: {}",
+        received_count
+    );
 }
 
 async fn handle_control_message(
@@ -288,11 +289,24 @@ async fn handle_control_message(
     };
 
     match msg {
-        ControlMessage::Hello { device_name, screen } => {
-            info!("Hello from {} ({}x{})", device_name, screen.width, screen.height);
-            session.remote_screen_w.store(screen.width, Ordering::SeqCst);
-            session.remote_screen_h.store(screen.height, Ordering::SeqCst);
-            crate::logger::session_log(&format!("Connected with peer {} (remote screen: {}x{})", device_name, screen.width, screen.height));
+        ControlMessage::Hello {
+            device_name,
+            screen,
+        } => {
+            info!(
+                "Hello from {} ({}x{})",
+                device_name, screen.width, screen.height
+            );
+            session
+                .remote_screen_w
+                .store(screen.width, Ordering::SeqCst);
+            session
+                .remote_screen_h
+                .store(screen.height, Ordering::SeqCst);
+            crate::logger::session_log(&format!(
+                "Connected with peer {} (remote screen: {}x{})",
+                device_name, screen.width, screen.height
+            ));
             session.set_peer(src).await;
             // Reply with Welcome
             let welcome = ControlMessage::Welcome {
@@ -309,17 +323,33 @@ async fn handle_control_message(
             info!("Session established. We are in Receiver mode.");
         }
 
-        ControlMessage::Welcome { device_name, screen } => {
-            info!("Welcome from {} ({}x{})", device_name, screen.width, screen.height);
-            session.remote_screen_w.store(screen.width, Ordering::SeqCst);
-            session.remote_screen_h.store(screen.height, Ordering::SeqCst);
-            crate::logger::session_log(&format!("Peer {} acknowledged Welcome. Remote screen configured to {}x{}", device_name, screen.width, screen.height));
+        ControlMessage::Welcome {
+            device_name,
+            screen,
+        } => {
+            info!(
+                "Welcome from {} ({}x{})",
+                device_name, screen.width, screen.height
+            );
+            session
+                .remote_screen_w
+                .store(screen.width, Ordering::SeqCst);
+            session
+                .remote_screen_h
+                .store(screen.height, Ordering::SeqCst);
+            crate::logger::session_log(&format!(
+                "Peer {} acknowledged Welcome. Remote screen configured to {}x{}",
+                device_name, screen.width, screen.height
+            ));
             // The peer accepted — we stay in Sender mode
             session.set_mode(SessionMode::Sender).await;
             info!("Session established. We are in Sender mode.");
         }
 
-        ControlMessage::HandoffControl { entry_x_norm, entry_y_norm } => {
+        ControlMessage::HandoffControl {
+            entry_x_norm,
+            entry_y_norm,
+        } => {
             // Peer is handing control to us — we become Sender
             info!(
                 "HandoffControl received — taking control at ({:.2}, {:.2})",
@@ -332,7 +362,10 @@ async fn handle_control_message(
             session.set_mode(SessionMode::Sender).await;
         }
 
-        ControlMessage::ReturnControl { entry_x_norm, entry_y_norm } => {
+        ControlMessage::ReturnControl {
+            entry_x_norm,
+            entry_y_norm,
+        } => {
             // Peer wants to return control to us
             info!("ReturnControl received — resuming local capture");
             let px = (entry_x_norm * (session.local_screen_w as f32 - 1.0)).round() as i32;
@@ -425,9 +458,6 @@ fn platform_set_cursor(x: i32, y: i32) -> Result<()> {
 
 fn hostname() -> String {
     std::env::var("HOSTNAME")
-        .or_else(|_| {
-            std::fs::read_to_string("/etc/hostname")
-                .map(|s| s.trim().to_string())
-        })
+        .or_else(|_| std::fs::read_to_string("/etc/hostname").map(|s| s.trim().to_string()))
         .unwrap_or_else(|_| "unknown".to_string())
 }

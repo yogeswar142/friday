@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use friday_core::{CoreError, InputEvent, Result};
+use serde::{Deserialize, Serialize};
 
 pub const MAGIC_BYTES: &[u8; 4] = b"FRDY";
 pub const PROTOCOL_VERSION: u8 = 1;
@@ -132,7 +132,9 @@ mod tests {
         let decoded = NetworkPacket::decode(&encoded).unwrap();
 
         assert_eq!(decoded.header.sequence, 1);
-        if let PacketPayload::Input(InputEvent::Mouse(MouseEvent::Button { button, .. })) = decoded.payload {
+        if let PacketPayload::Input(InputEvent::Mouse(MouseEvent::Button { button, .. })) =
+            decoded.payload
+        {
             assert_eq!(button, MouseButton::Left);
         } else {
             panic!("Unexpected payload type");

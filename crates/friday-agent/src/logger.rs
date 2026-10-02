@@ -39,7 +39,11 @@ pub fn init_session_log() {
         let _ = f.write_all(header.as_bytes());
         let _ = f.flush();
     }
-    eprintln!("[{}] Session log initialized at {}", format_now(), LOG_FILE_PATH);
+    eprintln!(
+        "[{}] Session log initialized at {}",
+        format_now(),
+        LOG_FILE_PATH
+    );
 }
 
 pub fn session_log(msg: &str) {

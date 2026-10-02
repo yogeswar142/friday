@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 use friday_core::{
-    DisplayBounds, Edge, InputEvent, InputRouter, MouseEvent,
-    ScreenLayout, ScreenTopology,
+    DisplayBounds, Edge, InputEvent, InputRouter, MouseEvent, ScreenLayout, ScreenTopology,
 };
 use friday_network::{NetworkPacket, NetworkTransport, PacketPayload};
 use std::time::Instant;
@@ -26,17 +25,11 @@ enum Commands {
     /// List paired and discovered devices
     Devices,
     /// Pair with a remote FRIDAY node
-    Pair {
-        target: String,
-    },
+    Pair { target: String },
     /// Connect to a paired device
-    Connect {
-        device_id: String,
-    },
+    Connect { device_id: String },
     /// Disconnect from a device
-    Disconnect {
-        device_id: String,
-    },
+    Disconnect { device_id: String },
     /// Run health check and platform capabilities diagnostics
     Doctor,
     /// Run real-time latency and throughput benchmarks
@@ -93,7 +86,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             #[cfg(target_os = "linux")]
             {
                 let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-                println!("Display Server: {}", if is_wayland { "Wayland" } else { "X11" });
+                println!(
+                    "Display Server: {}",
+                    if is_wayland { "Wayland" } else { "X11" }
+                );
             }
             #[cfg(target_os = "windows")]
             {
@@ -108,7 +104,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("✓ All health checks passed.");
         }
         Commands::Benchmark { samples } => {
-            println!("=== Running FRIDAY Ultra-Low-Latency Benchmark ({} samples) ===", samples);
+            println!(
+                "=== Running FRIDAY Ultra-Low-Latency Benchmark ({} samples) ===",
+                samples
+            );
 
             let sender = NetworkTransport::bind("127.0.0.1:0").await?;
             let receiver = NetworkTransport::bind("127.0.0.1:0").await?;
@@ -129,7 +128,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let encoded = packet.encode()?;
                 serialized_bytes += encoded.len();
 
-                sender.send_input_to(packet.payload.into_input().unwrap(), recv_addr).await?;
+                sender
+                    .send_input_to(packet.payload.into_input().unwrap(), recv_addr)
+                    .await?;
                 let (rec_packet, _src) = receiver.recv_packet().await?;
                 let _decoded_input = rec_packet.payload.into_input().unwrap();
 
@@ -144,7 +145,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("  Samples Processed : {}", samples);
             println!("  Avg Packet Size   : {:.2} bytes", avg_packet_bytes);
             println!("  Avg Loopback RTT  : {:.3} µs", avg_latency_us);
-            println!("  Throughput Rate   : {:.0} pkts/sec", 1_000_000.0 / avg_latency_us);
+            println!(
+                "  Throughput Rate   : {:.0} pkts/sec",
+                1_000_000.0 / avg_latency_us
+            );
             println!("✓ Performance target achieved (< 1ms data plane latency).");
         }
         Commands::Simulate { events } => {
@@ -169,7 +173,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let router = InputRouter::new("PC_A", topology);
 
             println!("Configured Screen Layout: [PC_A (1920x1080)] <---> [PC_B (2560x1440)]");
-            println!("Simulating {} mouse movement events across right screen edge...", events);
+            println!(
+                "Simulating {} mouse movement events across right screen edge...",
+                events
+            );
 
             let mut transitions = 0;
             for i in 0..events {

@@ -1,5 +1,3 @@
-use tauri::State;
-use friday_core::{DisplayBounds, ScreenLayout};
 use crate::config::ConfigManager;
 use crate::diagnostics::{run_core_benchmark, run_system_diagnostics};
 use crate::state::SharedAppState;
@@ -8,6 +6,8 @@ use crate::types::{
     LogEntryDto, PlatformCapabilitiesDto, PlatformPermissionsDto, SettingsDto, TelemetryDto,
     TopologyDto, TopologyLinkDto,
 };
+use friday_core::{DisplayBounds, ScreenLayout};
+use tauri::State;
 
 #[tauri::command]
 pub fn get_status(state: State<'_, SharedAppState>) -> EngineStatus {
@@ -20,7 +20,11 @@ pub fn start_engine(state: State<'_, SharedAppState>) -> Result<EngineStatus, St
     let mut app = state.lock().unwrap();
     app.engine_running = true;
     app.engine_paused = false;
-    app.add_log("INFO", "friday_core::engine", "Engine started by user request");
+    app.add_log(
+        "INFO",
+        "friday_core::engine",
+        "Engine started by user request",
+    );
     Ok(app.get_engine_status())
 }
 
@@ -29,7 +33,11 @@ pub fn stop_engine(state: State<'_, SharedAppState>) -> Result<EngineStatus, Str
     let mut app = state.lock().unwrap();
     app.engine_running = false;
     app.engine_paused = false;
-    app.add_log("INFO", "friday_core::engine", "Engine stopped by user request");
+    app.add_log(
+        "INFO",
+        "friday_core::engine",
+        "Engine stopped by user request",
+    );
     Ok(app.get_engine_status())
 }
 
@@ -37,7 +45,11 @@ pub fn stop_engine(state: State<'_, SharedAppState>) -> Result<EngineStatus, Str
 pub fn pause_engine(state: State<'_, SharedAppState>) -> Result<EngineStatus, String> {
     let mut app = state.lock().unwrap();
     app.engine_paused = !app.engine_paused;
-    let msg = if app.engine_paused { "Engine paused" } else { "Engine resumed" };
+    let msg = if app.engine_paused {
+        "Engine paused"
+    } else {
+        "Engine resumed"
+    };
     app.add_log("INFO", "friday_core::engine", msg);
     Ok(app.get_engine_status())
 }
@@ -49,17 +61,27 @@ pub fn get_active_device(state: State<'_, SharedAppState>) -> String {
 }
 
 #[tauri::command]
-pub fn switch_active_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
+pub fn switch_active_device(
+    device_id: String,
+    state: State<'_, SharedAppState>,
+) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     if !app.topology.ring.contains(&device_id) {
-        return Err(format!("Device {} is not in the circular ring topology", device_id));
+        return Err(format!(
+            "Device {} is not in the circular ring topology",
+            device_id
+        ));
     }
     app.active_device_id = device_id.clone();
     app.topology.set_active_device(&device_id);
     for d in &mut app.devices {
         d.is_active = d.id == device_id;
     }
-    app.add_log("INFO", "friday_core::ownership", &format!("Ownership manually switched to {}", device_id));
+    app.add_log(
+        "INFO",
+        "friday_core::ownership",
+        &format!("Ownership manually switched to {}", device_id),
+    );
     Ok(())
 }
 
@@ -73,7 +95,6 @@ pub fn get_devices(state: State<'_, SharedAppState>) -> Vec<DeviceInfo> {
 pub fn discover_devices(state: State<'_, SharedAppState>) -> Vec<DiscoveredDevice> {
     crate::discovery::scan_local_subnet(state.inner().clone())
 }
-
 
 #[tauri::command]
 pub fn add_manual_device(
@@ -89,11 +110,20 @@ pub fn add_manual_device(
     }
 
     let mut app = state.lock().unwrap();
-    let dev_name = name.filter(|s| !s.trim().is_empty()).unwrap_or_else(|| format!("Laptop ({})", ip));
+    let dev_name = name
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("Laptop ({})", ip));
     let dev_id = dev_name.replace(' ', "_");
 
-    if app.devices.iter().any(|d| d.ip_address == ip || d.id == dev_id) {
-        return Err(format!("Device with IP {} or ID {} already exists in known devices", ip, dev_id));
+    if app
+        .devices
+        .iter()
+        .any(|d| d.ip_address == ip || d.id == dev_id)
+    {
+        return Err(format!(
+            "Device with IP {} or ID {} already exists in known devices",
+            ip, dev_id
+        ));
     }
 
     let new_device = DeviceInfo {
@@ -107,7 +137,11 @@ pub fn add_manual_device(
         is_active: false,
         is_connected: true,
         latency_ms: 0.85,
-        capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
+        capabilities: vec![
+            "mouse_capture".into(),
+            "mouse_injection".into(),
+            "edge_detection".into(),
+        ],
     };
 
     app.devices.push(new_device.clone());
@@ -117,15 +151,28 @@ pub fn add_manual_device(
         bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
     });
 
-    app.add_log("INFO", "friday_network::pairing", &format!("Device {} added ({}) and connected to ring", dev_name, new_device.ip_address));
+    app.add_log(
+        "INFO",
+        "friday_network::pairing",
+        &format!(
+            "Device {} added ({}) and connected to ring",
+            dev_name, new_device.ip_address
+        ),
+    );
     app.persist_config();
     Ok(new_device)
 }
 
 #[tauri::command]
-pub fn pair_device(device_id: String, state: State<'_, SharedAppState>) -> Result<DeviceInfo, String> {
+pub fn pair_device(
+    device_id: String,
+    state: State<'_, SharedAppState>,
+) -> Result<DeviceInfo, String> {
     let mut app = state.lock().unwrap();
-    let idx = app.discovered_devices.iter().position(|d| d.id == device_id)
+    let idx = app
+        .discovered_devices
+        .iter()
+        .position(|d| d.id == device_id)
         .ok_or_else(|| format!("Device {} not found in discovered list", device_id))?;
 
     let discovered = app.discovered_devices.remove(idx);
@@ -140,7 +187,11 @@ pub fn pair_device(device_id: String, state: State<'_, SharedAppState>) -> Resul
         is_active: false,
         is_connected: true,
         latency_ms: 0.95,
-        capabilities: vec!["mouse_capture".into(), "mouse_injection".into(), "edge_detection".into()],
+        capabilities: vec![
+            "mouse_capture".into(),
+            "mouse_injection".into(),
+            "edge_detection".into(),
+        ],
     };
 
     app.devices.push(new_device.clone());
@@ -150,7 +201,14 @@ pub fn pair_device(device_id: String, state: State<'_, SharedAppState>) -> Resul
         bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
     });
 
-    app.add_log("INFO", "friday_network::pairing", &format!("Device {} successfully paired and added to circular ring", discovered.name));
+    app.add_log(
+        "INFO",
+        "friday_network::pairing",
+        &format!(
+            "Device {} successfully paired and added to circular ring",
+            discovered.name
+        ),
+    );
     app.persist_config();
     Ok(new_device)
 }
@@ -171,18 +229,25 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
         app.topology.set_active_device(&local_id);
     }
 
-    app.add_log("INFO", "friday_network::pairing", &format!("Device {} unpaired", device_id));
+    app.add_log(
+        "INFO",
+        "friday_network::pairing",
+        &format!("Device {} unpaired", device_id),
+    );
     app.persist_config();
     Ok(())
 }
-
 
 #[tauri::command]
 pub fn connect_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     if let Some(dev) = app.devices.iter_mut().find(|d| d.id == device_id) {
         dev.is_connected = true;
-        app.add_log("INFO", "friday_network::transport", &format!("Connected to {}", device_id));
+        app.add_log(
+            "INFO",
+            "friday_network::transport",
+            &format!("Connected to {}", device_id),
+        );
         Ok(())
     } else {
         Err(format!("Device {} not found", device_id))
@@ -190,7 +255,10 @@ pub fn connect_device(device_id: String, state: State<'_, SharedAppState>) -> Re
 }
 
 #[tauri::command]
-pub fn disconnect_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
+pub fn disconnect_device(
+    device_id: String,
+    state: State<'_, SharedAppState>,
+) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     if let Some(dev) = app.devices.iter_mut().find(|d| d.id == device_id) {
         dev.is_connected = false;
@@ -199,7 +267,11 @@ pub fn disconnect_device(device_id: String, state: State<'_, SharedAppState>) ->
             app.active_device_id = local_id.clone();
             app.topology.set_active_device(&local_id);
         }
-        app.add_log("INFO", "friday_network::transport", &format!("Disconnected from {}", device_id));
+        app.add_log(
+            "INFO",
+            "friday_network::transport",
+            &format!("Disconnected from {}", device_id),
+        );
         Ok(())
     } else {
         Err(format!("Device {} not found", device_id))
@@ -251,7 +323,11 @@ pub fn set_topology(ring: Vec<String>, state: State<'_, SharedAppState>) -> Resu
         app.topology.set_active_device(&ring[0]);
     }
 
-    app.add_log("INFO", "friday_core::topology", &format!("Circular ring topology updated: {}", ring.join(" → ")));
+    app.add_log(
+        "INFO",
+        "friday_core::topology",
+        &format!("Circular ring topology updated: {}", ring.join(" → ")),
+    );
     app.persist_config();
     Ok(())
 }
@@ -265,18 +341,28 @@ pub fn reorder_ring(ring: Vec<String>, state: State<'_, SharedAppState>) -> Resu
 pub fn add_ring_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     if !app.devices.iter().any(|d| d.id == device_id) {
-        return Err(format!("Device {} does not exist in paired devices", device_id));
+        return Err(format!(
+            "Device {} does not exist in paired devices",
+            device_id
+        ));
     }
     if !app.topology.ring.contains(&device_id) {
         app.topology.ring.push(device_id.clone());
     }
-    app.add_log("INFO", "friday_core::topology", &format!("Added {} to circular ring", device_id));
+    app.add_log(
+        "INFO",
+        "friday_core::topology",
+        &format!("Added {} to circular ring", device_id),
+    );
     app.persist_config();
     Ok(())
 }
 
 #[tauri::command]
-pub fn remove_ring_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
+pub fn remove_ring_device(
+    device_id: String,
+    state: State<'_, SharedAppState>,
+) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     if app.topology.ring.len() <= 1 {
         return Err("Cannot remove last device from circular ring".into());
@@ -287,7 +373,11 @@ pub fn remove_ring_device(device_id: String, state: State<'_, SharedAppState>) -
         app.active_device_id = local_id.clone();
         app.topology.set_active_device(&local_id);
     }
-    app.add_log("INFO", "friday_core::topology", &format!("Removed {} from circular ring", device_id));
+    app.add_log(
+        "INFO",
+        "friday_core::topology",
+        &format!("Removed {} from circular ring", device_id),
+    );
     app.persist_config();
     Ok(())
 }
@@ -326,11 +416,18 @@ pub fn get_settings(state: State<'_, SharedAppState>) -> SettingsDto {
 }
 
 #[tauri::command]
-pub fn save_settings(settings: SettingsDto, state: State<'_, SharedAppState>) -> Result<(), String> {
+pub fn save_settings(
+    settings: SettingsDto,
+    state: State<'_, SharedAppState>,
+) -> Result<(), String> {
     let mut app = state.lock().unwrap();
     ConfigManager::save(&settings)?;
     app.settings = settings;
-    app.add_log("INFO", "friday_core::config", "Configuration saved successfully");
+    app.add_log(
+        "INFO",
+        "friday_core::config",
+        "Configuration saved successfully",
+    );
     Ok(())
 }
 
@@ -339,10 +436,10 @@ pub fn get_platform_capabilities() -> PlatformCapabilitiesDto {
     PlatformCapabilitiesDto {
         mouse_capture: true,
         mouse_injection: true,
-        keyboard_capture: false, // In development
+        keyboard_capture: false,   // In development
         keyboard_injection: false, // In development
-        clipboard: false, // Coming soon
-        file_transfer: false, // Coming soon
+        clipboard: false,          // Coming soon
+        file_transfer: false,      // Coming soon
         screen_information: true,
         multi_monitor: true,
         edge_detection: true,
@@ -358,8 +455,16 @@ pub fn get_platform_permissions() -> PlatformPermissionsDto {
 
     if cfg!(target_os = "linux") {
         let is_wayland = std::env::var("WAYLAND_DISPLAY").is_ok();
-        let display_server = if is_wayland { "Wayland".to_string() } else { "X11".to_string() };
-        let input_backend = if is_wayland { "Wayland (Portal / evdev)".to_string() } else { "X11 (XTest)".to_string() };
+        let display_server = if is_wayland {
+            "Wayland".to_string()
+        } else {
+            "X11".to_string()
+        };
+        let input_backend = if is_wayland {
+            "Wayland (Portal / evdev)".to_string()
+        } else {
+            "X11 (XTest)".to_string()
+        };
 
         let (warn, instr) = if is_wayland {
             (
@@ -446,12 +551,8 @@ pub fn initiate_pairing(
             })
             .cloned();
 
-        let dev = dev.ok_or_else(|| {
-            format!(
-                "Device {} not found in discovered devices list",
-                device_id
-            )
-        })?;
+        let dev = dev
+            .ok_or_else(|| format!("Device {} not found in discovered devices list", device_id))?;
 
         let local_id = app.local_device_id.clone();
         let local_name = app
@@ -463,10 +564,15 @@ pub fn initiate_pairing(
         (local_id, local_name, dev.ip_address.clone())
     };
 
-    app_log(&state, "INFO", "friday_network::pairing", &format!(
-        "Initiating pairing with {} (IP: {}) PIN={}",
-        device_id, target_ip, pin
-    ));
+    app_log(
+        &state,
+        "INFO",
+        "friday_network::pairing",
+        &format!(
+            "Initiating pairing with {} (IP: {}) PIN={}",
+            device_id, target_ip, pin
+        ),
+    );
 
     // Pre-flight: quick 3s probe to confirm FRIDAY is reachable on pairing port.
     // Returns a clear error immediately instead of waiting 30s on timeout.
@@ -475,15 +581,30 @@ pub fn initiate_pairing(
         e
     })?;
 
+    app_log(
+        &state,
+        "INFO",
+        "friday_network::pairing",
+        &format!(
+            "🔍 Probe OK — {} is reachable on port {}. Sending PAIR_REQUEST now...",
+            target_ip,
+            crate::pairing::PAIR_REQUEST_PORT
+        ),
+    );
+
     // This blocks the Tauri command thread for up to 30 seconds.
     // Tauri async commands run on a thread pool so the GUI stays responsive.
     let accepted =
-        crate::pairing::send_pairing_request(&target_ip, &local_id, &local_name, &pin)?;
+        crate::pairing::send_pairing_request(&target_ip, &local_id, &local_name, &pin, &state)?;
 
     if accepted {
         // Promote discovered → paired device automatically
         let mut app = state.lock().unwrap();
-        if let Some(idx) = app.discovered_devices.iter().position(|d| d.id == device_id) {
+        if let Some(idx) = app
+            .discovered_devices
+            .iter()
+            .position(|d| d.id == device_id)
+        {
             let discovered = app.discovered_devices.remove(idx);
             let new_device = crate::types::DeviceInfo {
                 id: discovered.id.clone(),
@@ -511,15 +632,20 @@ pub fn initiate_pairing(
             app.add_log(
                 "INFO",
                 "friday_network::pairing",
-                &format!("Device {} paired successfully (PIN confirmed)", discovered.name),
+                &format!(
+                    "Device {} paired successfully (PIN confirmed)",
+                    discovered.name
+                ),
             );
             app.persist_config();
         }
     } else {
-        app_log(&state, "WARN", "friday_network::pairing", &format!(
-            "Pairing with {} was rejected or timed out",
-            device_id
-        ));
+        app_log(
+            &state,
+            "WARN",
+            "friday_network::pairing",
+            &format!("Pairing with {} was rejected or timed out", device_id),
+        );
     }
 
     Ok(accepted)
@@ -584,17 +710,25 @@ pub fn respond_to_pair_request(
             app.add_log(
                 "INFO",
                 "friday_network::pairing",
-                &format!("Accepted pairing from {} — device added to ring", request.from_name),
+                &format!(
+                    "Accepted pairing from {} — device added to ring",
+                    request.from_name
+                ),
             );
             app.persist_config();
         }
     } else {
         let app = state.lock().unwrap();
         drop(app); // release lock before log
-        app_log(&state, "INFO", "friday_network::pairing", &format!(
-            "Rejected pairing request from {} (PIN {})",
-            request.from_name, pin
-        ));
+        app_log(
+            &state,
+            "INFO",
+            "friday_network::pairing",
+            &format!(
+                "Rejected pairing request from {} (PIN {})",
+                request.from_name, pin
+            ),
+        );
     }
 
     Ok(())

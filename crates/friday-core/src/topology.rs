@@ -1,6 +1,6 @@
-use std::collections::HashMap;
-use serde::{Deserialize, Serialize};
 use crate::coordinates::{DisplayBounds, NormalizedPoint};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Edge {
@@ -47,8 +47,12 @@ impl ScreenTopology {
 
     /// Link device A's edge to device B
     pub fn connect(&mut self, device_a: &str, edge: Edge, device_b: &str) {
-        self.connections.insert((device_a.to_string(), edge), device_b.to_string());
-        self.connections.insert((device_b.to_string(), edge.opposite()), device_a.to_string());
+        self.connections
+            .insert((device_a.to_string(), edge), device_b.to_string());
+        self.connections.insert(
+            (device_b.to_string(), edge.opposite()),
+            device_a.to_string(),
+        );
     }
 
     pub fn get_target_device(&self, source_device: &str, edge: Edge) -> Option<&String> {
@@ -70,7 +74,10 @@ impl From<ScreenTopology> for CircularTopology {
                 start_candidates.push(src.clone());
             }
         }
-        let start = start_candidates.first().or_else(|| st.devices.keys().next()).cloned();
+        let start = start_candidates
+            .first()
+            .or_else(|| st.devices.keys().next())
+            .cloned();
         if let Some(first) = start {
             let mut curr = first;
             let mut visited = std::collections::HashSet::new();
@@ -98,7 +105,6 @@ impl From<ScreenTopology> for CircularTopology {
         }
     }
 }
-
 
 /// Circular N-Device Mouse Routing Topology
 ///
@@ -149,7 +155,10 @@ impl CircularTopology {
     }
 
     /// Construct circular topology from existing device map and an ordered ring
-    pub fn from_devices_and_ring(devices: HashMap<String, ScreenLayout>, ring: Vec<String>) -> Self {
+    pub fn from_devices_and_ring(
+        devices: HashMap<String, ScreenLayout>,
+        ring: Vec<String>,
+    ) -> Self {
         let active_device = ring.first().cloned().unwrap_or_default();
         Self {
             ring,
@@ -182,7 +191,9 @@ impl CircularTopology {
 
     /// Set the circular ring order explicitly
     pub fn set_ring(&mut self, ring: Vec<String>) {
-        if !ring.is_empty() && (self.active_device.is_empty() || !ring.contains(&self.active_device)) {
+        if !ring.is_empty()
+            && (self.active_device.is_empty() || !ring.contains(&self.active_device))
+        {
             self.active_device = ring[0].clone();
         }
         self.ring = ring;
@@ -257,22 +268,45 @@ impl CircularTopology {
     }
 
     /// Add a custom directional link (e.g. for Top/Bottom edges)
-    pub fn set_custom_link(&mut self, source_id: impl Into<String>, edge: Edge, target_id: impl Into<String>) {
-        self.custom_links.insert((source_id.into(), edge), target_id.into());
+    pub fn set_custom_link(
+        &mut self,
+        source_id: impl Into<String>,
+        edge: Edge,
+        target_id: impl Into<String>,
+    ) {
+        self.custom_links
+            .insert((source_id.into(), edge), target_id.into());
     }
 
     /// Calculate the opposite corresponding entry point preserving perpendicular coordinate
     pub fn calculate_entry_point(edge: Edge, exit_point: NormalizedPoint) -> NormalizedPoint {
         match edge {
-            Edge::Right => NormalizedPoint { x: 0.0, y: exit_point.y.clamp(0.0, 1.0) },
-            Edge::Left => NormalizedPoint { x: 1.0, y: exit_point.y.clamp(0.0, 1.0) },
-            Edge::Top => NormalizedPoint { x: exit_point.x.clamp(0.0, 1.0), y: 1.0 },
-            Edge::Bottom => NormalizedPoint { x: exit_point.x.clamp(0.0, 1.0), y: 0.0 },
+            Edge::Right => NormalizedPoint {
+                x: 0.0,
+                y: exit_point.y.clamp(0.0, 1.0),
+            },
+            Edge::Left => NormalizedPoint {
+                x: 1.0,
+                y: exit_point.y.clamp(0.0, 1.0),
+            },
+            Edge::Top => NormalizedPoint {
+                x: exit_point.x.clamp(0.0, 1.0),
+                y: 1.0,
+            },
+            Edge::Bottom => NormalizedPoint {
+                x: exit_point.x.clamp(0.0, 1.0),
+                y: 0.0,
+            },
         }
     }
 
     /// Atomically transfer ownership from source_id crossing `edge`
-    pub fn transfer(&mut self, source_id: &str, edge: Edge, exit_point: NormalizedPoint) -> Option<TransferEvent> {
+    pub fn transfer(
+        &mut self,
+        source_id: &str,
+        edge: Edge,
+        exit_point: NormalizedPoint,
+    ) -> Option<TransferEvent> {
         let target_id = self.neighbor_at_edge(source_id, edge)?.to_string();
         let entry_point = Self::calculate_entry_point(edge, exit_point);
         self.active_device = target_id.clone();
@@ -294,8 +328,10 @@ impl CircularTopology {
             for i in 0..self.ring.len() {
                 let curr = &self.ring[i];
                 let next = &self.ring[(i + 1) % self.ring.len()];
-                st.connections.insert((curr.clone(), Edge::Right), next.clone());
-                st.connections.insert((next.clone(), Edge::Left), curr.clone());
+                st.connections
+                    .insert((curr.clone(), Edge::Right), next.clone());
+                st.connections
+                    .insert((next.clone(), Edge::Left), curr.clone());
             }
         }
         for ((src, edge), target) in &self.custom_links {
@@ -348,9 +384,14 @@ impl InputRouter {
         };
 
         if let Some(triggered_edge) = edge {
-            if let Some(target_id) = self.topology.get_target_device(&self.current_device_id, triggered_edge) {
-                let norm = bounds.to_normalized(abs_x, abs_y).unwrap_or(NormalizedPoint { x: 0.5, y: 0.5 });
-                
+            if let Some(target_id) = self
+                .topology
+                .get_target_device(&self.current_device_id, triggered_edge)
+            {
+                let norm = bounds
+                    .to_normalized(abs_x, abs_y)
+                    .unwrap_or(NormalizedPoint { x: 0.5, y: 0.5 });
+
                 // Calculate entry point on target screen
                 let entry_point = match triggered_edge {
                     Edge::Right => NormalizedPoint { x: 0.0, y: norm.y },
@@ -403,7 +444,9 @@ mod tests {
         assert_eq!(ct.left_neighbor("B"), Some("A"));
 
         // Transfer A.Right -> B.Left with y=0.35
-        let t1 = ct.transfer("A", Edge::Right, NormalizedPoint { x: 1.0, y: 0.35 }).unwrap();
+        let t1 = ct
+            .transfer("A", Edge::Right, NormalizedPoint { x: 1.0, y: 0.35 })
+            .unwrap();
         assert_eq!(t1.source_device, "A");
         assert_eq!(t1.target_device, "B");
         assert_eq!(t1.edge, Edge::Right);
@@ -412,7 +455,9 @@ mod tests {
         assert_eq!(ct.active_device(), "B");
 
         // Transfer B.Right -> A.Left with y=0.82
-        let t2 = ct.transfer("B", Edge::Right, NormalizedPoint { x: 1.0, y: 0.82 }).unwrap();
+        let t2 = ct
+            .transfer("B", Edge::Right, NormalizedPoint { x: 1.0, y: 0.82 })
+            .unwrap();
         assert_eq!(t2.source_device, "B");
         assert_eq!(t2.target_device, "A");
         assert_eq!(t2.entry_point.x, 0.0); // Enters A Left edge
@@ -420,7 +465,9 @@ mod tests {
         assert_eq!(ct.active_device(), "A");
 
         // Now move LEFT from A: A.Left -> B.Right with y=0.55
-        let t3 = ct.transfer("A", Edge::Left, NormalizedPoint { x: 0.0, y: 0.55 }).unwrap();
+        let t3 = ct
+            .transfer("A", Edge::Left, NormalizedPoint { x: 0.0, y: 0.55 })
+            .unwrap();
         assert_eq!(t3.source_device, "A");
         assert_eq!(t3.target_device, "B");
         assert_eq!(t3.entry_point.x, 1.0); // Enters B Right edge
@@ -428,7 +475,9 @@ mod tests {
         assert_eq!(ct.active_device(), "B");
 
         // Move LEFT from B: B.Left -> A.Right with y=0.15
-        let t4 = ct.transfer("B", Edge::Left, NormalizedPoint { x: 0.0, y: 0.15 }).unwrap();
+        let t4 = ct
+            .transfer("B", Edge::Left, NormalizedPoint { x: 0.0, y: 0.15 })
+            .unwrap();
         assert_eq!(t4.source_device, "B");
         assert_eq!(t4.target_device, "A");
         assert_eq!(t4.entry_point.x, 1.0); // Enters A Right edge
@@ -453,28 +502,36 @@ mod tests {
         assert_eq!(ct.right_neighbor("C"), Some("A"));
 
         // A -> B
-        let t1 = ct.transfer("A", Edge::Right, NormalizedPoint { x: 1.0, y: 0.4 }).unwrap();
+        let t1 = ct
+            .transfer("A", Edge::Right, NormalizedPoint { x: 1.0, y: 0.4 })
+            .unwrap();
         assert_eq!(t1.target_device, "B");
         assert_eq!(t1.entry_point.x, 0.0);
         assert_eq!(t1.entry_point.y, 0.4);
         assert_eq!(ct.active_device(), "B");
 
         // B -> C
-        let t2 = ct.transfer("B", Edge::Right, NormalizedPoint { x: 1.0, y: 0.6 }).unwrap();
+        let t2 = ct
+            .transfer("B", Edge::Right, NormalizedPoint { x: 1.0, y: 0.6 })
+            .unwrap();
         assert_eq!(t2.target_device, "C");
         assert_eq!(t2.entry_point.x, 0.0);
         assert_eq!(t2.entry_point.y, 0.6);
         assert_eq!(ct.active_device(), "C");
 
         // C -> A
-        let t3 = ct.transfer("C", Edge::Right, NormalizedPoint { x: 1.0, y: 0.2 }).unwrap();
+        let t3 = ct
+            .transfer("C", Edge::Right, NormalizedPoint { x: 1.0, y: 0.2 })
+            .unwrap();
         assert_eq!(t3.target_device, "A");
         assert_eq!(t3.entry_point.x, 0.0);
         assert_eq!(t3.entry_point.y, 0.2);
         assert_eq!(ct.active_device(), "A");
 
         // Second loop: A -> B
-        let t4 = ct.transfer("A", Edge::Right, NormalizedPoint { x: 1.0, y: 0.9 }).unwrap();
+        let t4 = ct
+            .transfer("A", Edge::Right, NormalizedPoint { x: 1.0, y: 0.9 })
+            .unwrap();
         assert_eq!(t4.target_device, "B");
         assert_eq!(t4.entry_point.x, 0.0);
         assert_eq!(t4.entry_point.y, 0.9);
@@ -495,21 +552,27 @@ mod tests {
         assert_eq!(ct.left_neighbor("B"), Some("A"));
 
         // A -> C
-        let t1 = ct.transfer("A", Edge::Left, NormalizedPoint { x: 0.0, y: 0.3 }).unwrap();
+        let t1 = ct
+            .transfer("A", Edge::Left, NormalizedPoint { x: 0.0, y: 0.3 })
+            .unwrap();
         assert_eq!(t1.target_device, "C");
         assert_eq!(t1.entry_point.x, 1.0); // Enters C Right edge
         assert_eq!(t1.entry_point.y, 0.3);
         assert_eq!(ct.active_device(), "C");
 
         // C -> B
-        let t2 = ct.transfer("C", Edge::Left, NormalizedPoint { x: 0.0, y: 0.7 }).unwrap();
+        let t2 = ct
+            .transfer("C", Edge::Left, NormalizedPoint { x: 0.0, y: 0.7 })
+            .unwrap();
         assert_eq!(t2.target_device, "B");
         assert_eq!(t2.entry_point.x, 1.0); // Enters B Right edge
         assert_eq!(t2.entry_point.y, 0.7);
         assert_eq!(ct.active_device(), "B");
 
         // B -> A
-        let t3 = ct.transfer("B", Edge::Left, NormalizedPoint { x: 0.0, y: 0.5 }).unwrap();
+        let t3 = ct
+            .transfer("B", Edge::Left, NormalizedPoint { x: 0.0, y: 0.5 })
+            .unwrap();
         assert_eq!(t3.target_device, "A");
         assert_eq!(t3.entry_point.x, 1.0); // Enters A Right edge
         assert_eq!(t3.entry_point.y, 0.5);
@@ -530,7 +593,9 @@ mod tests {
         let mut curr = "NODE_0".to_string();
         for step in 1..=10 {
             let next_expected = format!("NODE_{}", step % 5);
-            let t = ct.transfer(&curr, Edge::Right, NormalizedPoint { x: 1.0, y: 0.5 }).unwrap();
+            let t = ct
+                .transfer(&curr, Edge::Right, NormalizedPoint { x: 1.0, y: 0.5 })
+                .unwrap();
             assert_eq!(t.target_device, next_expected);
             assert_eq!(t.entry_point.x, 0.0);
             assert_eq!(t.entry_point.y, 0.5);
@@ -541,7 +606,9 @@ mod tests {
         let mut curr = "NODE_0".to_string();
         for step in 1..=10 {
             let prev_expected = format!("NODE_{}", (50 - step) % 5);
-            let t = ct.transfer(&curr, Edge::Left, NormalizedPoint { x: 0.0, y: 0.5 }).unwrap();
+            let t = ct
+                .transfer(&curr, Edge::Left, NormalizedPoint { x: 0.0, y: 0.5 })
+                .unwrap();
             assert_eq!(t.target_device, prev_expected);
             assert_eq!(t.entry_point.x, 1.0);
             assert_eq!(t.entry_point.y, 0.5);

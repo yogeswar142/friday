@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::error::{CoreError, Result};
+use serde::{Deserialize, Serialize};
 
 /// Represents physical/pixel dimensions of a display
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -13,13 +13,24 @@ pub struct DisplayBounds {
 }
 
 impl DisplayBounds {
-    pub fn new(x: i32, y: i32, width: u32, height: u32, scale_factor: f32, is_primary: bool) -> Self {
+    pub fn new(
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+        scale_factor: f32,
+        is_primary: bool,
+    ) -> Self {
         Self {
             x,
             y,
             width,
             height,
-            scale_factor: if scale_factor <= 0.0 { 1.0 } else { scale_factor },
+            scale_factor: if scale_factor <= 0.0 {
+                1.0
+            } else {
+                scale_factor
+            },
             is_primary,
         }
     }
@@ -30,13 +41,18 @@ impl DisplayBounds {
         let rel_y = (abs_y - self.y) as f32;
 
         if self.width == 0 || self.height == 0 {
-            return Err(CoreError::RouterError("Display bounds width or height is zero".into()));
+            return Err(CoreError::RouterError(
+                "Display bounds width or height is zero".into(),
+            ));
         }
 
         let norm_x = (rel_x / self.width as f32).clamp(0.0, 1.0);
         let norm_y = (rel_y / self.height as f32).clamp(0.0, 1.0);
 
-        Ok(NormalizedPoint { x: norm_x, y: norm_y })
+        Ok(NormalizedPoint {
+            x: norm_x,
+            y: norm_y,
+        })
     }
 
     /// Convert normalized point [0.0, 1.0] to physical pixel coordinate on this display

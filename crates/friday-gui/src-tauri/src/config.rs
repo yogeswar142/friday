@@ -1,7 +1,7 @@
+use crate::types::{DeviceInfo, SettingsDto};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
-use serde::{Deserialize, Serialize};
-use crate::types::{DeviceInfo, SettingsDto};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
@@ -74,4 +74,3 @@ impl ConfigManager {
         Self::save_config(&config)
     }
 }
-

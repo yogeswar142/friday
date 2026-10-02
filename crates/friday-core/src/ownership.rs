@@ -1,10 +1,10 @@
-use serde::{Deserialize, Serialize};
 use crate::{
     coordinates::NormalizedPoint,
     events::{InputEvent, MouseEvent},
     state::{CursorMemory, HeldInputState},
     topology::{CircularTopology, Edge, ScreenTopology, TransferEvent},
 };
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceOwnershipState {
@@ -72,7 +72,10 @@ impl ExclusiveOwnershipRouter {
         }
     }
 
-    pub fn from_screen_topology(local_device_id: impl Into<String>, topology: ScreenTopology) -> Self {
+    pub fn from_screen_topology(
+        local_device_id: impl Into<String>,
+        topology: ScreenTopology,
+    ) -> Self {
         Self::new(local_device_id, topology)
     }
 
@@ -101,7 +104,11 @@ impl ExclusiveOwnershipRouter {
     /// - If remote cursor reaches a boundary connecting to next device:
     ///   transfers ownership to that device (whether local machine or another remote device in the circular ring).
     /// - Otherwise: routes event exclusively to active remote device.
-    pub fn route_input(&mut self, event: InputEvent, current_local_pos: Option<(i32, i32)>) -> Vec<RoutingDecision> {
+    pub fn route_input(
+        &mut self,
+        event: InputEvent,
+        current_local_pos: Option<(i32, i32)>,
+    ) -> Vec<RoutingDecision> {
         let mut decisions = Vec::new();
 
         // Track held buttons for safety
@@ -123,7 +130,8 @@ impl ExclusiveOwnershipRouter {
                     let local_layout = self.topology.devices.get(&self.local_device_id).cloned();
                     if let Some(layout) = &local_layout {
                         if let Ok(norm) = layout.bounds.to_normalized(x, y) {
-                            self.cursor_memory.set_last_position(&self.local_device_id, norm);
+                            self.cursor_memory
+                                .set_last_position(&self.local_device_id, norm);
                         }
                     }
 
@@ -134,8 +142,10 @@ impl ExclusiveOwnershipRouter {
 
                     // 4. Initialize remote cursor position from entry point
                     if let Some(target_layout) = self.topology.devices.get(&target_id) {
-                        let entry_x = transfer.entry_point.x * (target_layout.bounds.width as f32 - 1.0);
-                        let entry_y = transfer.entry_point.y * (target_layout.bounds.height as f32 - 1.0);
+                        let entry_x =
+                            transfer.entry_point.x * (target_layout.bounds.width as f32 - 1.0);
+                        let entry_y =
+                            transfer.entry_point.y * (target_layout.bounds.height as f32 - 1.0);
                         self.remote_cursor_px = (entry_x, entry_y);
                     }
 
@@ -177,7 +187,8 @@ impl ExclusiveOwnershipRouter {
                             let target_id = target.to_string();
 
                             // 1. Release held buttons on active remote device before handoff
-                            let release_events = self.held_input.generate_safety_release_events(*timestamp);
+                            let release_events =
+                                self.held_input.generate_safety_release_events(*timestamp);
                             for rel in release_events {
                                 decisions.push(RoutingDecision::Remote {
                                     target_device: remote_id.clone(),
@@ -188,10 +199,22 @@ impl ExclusiveOwnershipRouter {
                             // 2. Save remote exit position
                             let norm_x = (self.remote_cursor_px.0 / w).clamp(0.0, 1.0);
                             let norm_y = (self.remote_cursor_px.1 / h).clamp(0.0, 1.0);
-                            self.cursor_memory.set_last_position(&remote_id, NormalizedPoint { x: norm_x, y: norm_y });
+                            self.cursor_memory.set_last_position(
+                                &remote_id,
+                                NormalizedPoint {
+                                    x: norm_x,
+                                    y: norm_y,
+                                },
+                            );
 
                             // 3. Calculate entry point on target device
-                            let entry_norm = CircularTopology::calculate_entry_point(edge, NormalizedPoint { x: norm_x, y: norm_y });
+                            let entry_norm = CircularTopology::calculate_entry_point(
+                                edge,
+                                NormalizedPoint {
+                                    x: norm_x,
+                                    y: norm_y,
+                                },
+                            );
 
                             // 4. Transfer ownership to target_id (local machine or next remote device)
                             self.active_device_id = target_id.clone();
@@ -200,8 +223,10 @@ impl ExclusiveOwnershipRouter {
                             // 5. If new target is a remote device, initialize its cursor coordinates
                             if target_id != self.local_device_id {
                                 if let Some(target_layout) = self.topology.devices.get(&target_id) {
-                                    let entry_x = entry_norm.x * (target_layout.bounds.width as f32 - 1.0);
-                                    let entry_y = entry_norm.y * (target_layout.bounds.height as f32 - 1.0);
+                                    let entry_x =
+                                        entry_norm.x * (target_layout.bounds.width as f32 - 1.0);
+                                    let entry_y =
+                                        entry_norm.y * (target_layout.bounds.height as f32 - 1.0);
                                     self.remote_cursor_px = (entry_x, entry_y);
                                 }
                             }
@@ -249,12 +274,21 @@ impl ExclusiveOwnershipRouter {
             None
         }?;
 
-        let target_device = self.topology.neighbor_at_edge(&self.local_device_id, edge)?.to_string();
+        let target_device = self
+            .topology
+            .neighbor_at_edge(&self.local_device_id, edge)?
+            .to_string();
 
         let norm_x = ((x - bounds.x) as f32 / bounds.width as f32).clamp(0.0, 1.0);
         let norm_y = ((y - bounds.y) as f32 / bounds.height as f32).clamp(0.0, 1.0);
 
-        let entry_point = CircularTopology::calculate_entry_point(edge, NormalizedPoint { x: norm_x, y: norm_y });
+        let entry_point = CircularTopology::calculate_entry_point(
+            edge,
+            NormalizedPoint {
+                x: norm_x,
+                y: norm_y,
+            },
+        );
 
         Some(TransferEvent {
             source_device: self.local_device_id.clone(),
@@ -263,7 +297,6 @@ impl ExclusiveOwnershipRouter {
             entry_point,
         })
     }
-
 
     /// Safety reset on disconnect or emergency escape
     /// Restores ownership back to local machine and releases all held inputs
@@ -295,7 +328,9 @@ impl ExclusiveOwnershipRouter {
         self.topology.set_active_device(&self.local_device_id);
 
         if was_remote {
-            let last_local = self.cursor_memory.get_last_position(&self.local_device_id)
+            let last_local = self
+                .cursor_memory
+                .get_last_position(&self.local_device_id)
                 .unwrap_or(NormalizedPoint { x: 0.5, y: 0.5 });
             decisions.push(RoutingDecision::Transfer(TransferEvent {
                 source_device: previous_active,
@@ -343,7 +378,11 @@ mod tests {
         assert!(router.is_local_active());
 
         // Move inside G50 screen (e.g. at 500, 400)
-        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel { dx: 10, dy: -5, timestamp: 100 });
+        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 10,
+            dy: -5,
+            timestamp: 100,
+        });
         let decisions = router.route_input(move_evt.clone(), Some((500, 400)));
 
         assert_eq!(decisions.len(), 1);
@@ -354,7 +393,11 @@ mod tests {
     fn test_2_no_movement_sent_to_inactive_devices() {
         let mut router = create_test_setup();
         // While G50 is active, ZERO remote events are produced
-        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel { dx: 2, dy: 2, timestamp: 101 });
+        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 2,
+            dy: 2,
+            timestamp: 101,
+        });
         let decisions = router.route_input(move_evt, Some((600, 300)));
 
         for d in &decisions {
@@ -368,17 +411,24 @@ mod tests {
     fn test_3_g50_to_yoga_edge_transfer() {
         let mut router = create_test_setup();
         // Cursor reaches G50 Right Edge: x = 1365 (1366 - 1)
-        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel { dx: 5, dy: 0, timestamp: 102 });
+        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 5,
+            dy: 0,
+            timestamp: 102,
+        });
         let decisions = router.route_input(move_evt, Some((1365, 384)));
 
         assert_eq!(router.active_device_id(), "Yoga");
         assert!(!router.is_local_active());
 
         // Must emit a Transfer event to Yoga with entry at left edge (0.0)
-        let transfer = decisions.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).expect("Expected Transfer event");
+        let transfer = decisions
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .expect("Expected Transfer event");
 
         assert_eq!(transfer.source_device, "G50");
         assert_eq!(transfer.target_device, "Yoga");
@@ -393,14 +443,21 @@ mod tests {
         router.active_device_id = "Yoga".into();
         router.remote_cursor_px = (640.0, 400.0);
 
-        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel { dx: 15, dy: 10, timestamp: 103 });
+        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 15,
+            dy: 10,
+            timestamp: 103,
+        });
         let decisions = router.route_input(move_evt.clone(), None);
 
         assert_eq!(decisions.len(), 1);
-        assert_eq!(decisions[0], RoutingDecision::Remote {
-            target_device: "Yoga".into(),
-            event: move_evt,
-        });
+        assert_eq!(
+            decisions[0],
+            RoutingDecision::Remote {
+                target_device: "Yoga".into(),
+                event: move_evt,
+            }
+        );
 
         // Ensure NO local event produced
         for d in &decisions {
@@ -413,18 +470,26 @@ mod tests {
     #[test]
     fn test_5_no_duplicate_local_and_remote_movement() {
         let mut router = create_test_setup();
-        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel { dx: 5, dy: 5, timestamp: 104 });
+        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 5,
+            dy: 5,
+            timestamp: 104,
+        });
 
         // While G50 active
         let decisions = router.route_input(move_evt.clone(), Some((100, 100)));
-        assert!(!decisions.iter().any(|d| matches!(d, RoutingDecision::Remote { .. })));
+        assert!(!decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Remote { .. })));
 
         // Switch to Yoga
         router.active_device_id = "Yoga".into();
         router.remote_cursor_px = (640.0, 400.0);
 
         let decisions = router.route_input(move_evt, None);
-        assert!(!decisions.iter().any(|d| matches!(d, RoutingDecision::Local(_))));
+        assert!(!decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Local(_))));
     }
 
     #[test]
@@ -435,17 +500,24 @@ mod tests {
         router.remote_cursor_px = (5.0, 400.0);
 
         // Move Left past edge (dx = -10) -> x becomes -5 <= 0.0 (Left edge)
-        let move_left = InputEvent::Mouse(MouseEvent::MoveRel { dx: -10, dy: 0, timestamp: 105 });
+        let move_left = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: -10,
+            dy: 0,
+            timestamp: 105,
+        });
         let decisions = router.route_input(move_left, None);
 
         // Ownership must return to G50
         assert_eq!(router.active_device_id(), "G50");
         assert!(router.is_local_active());
 
-        let transfer = decisions.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).expect("Expected reverse Transfer event");
+        let transfer = decisions
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .expect("Expected reverse Transfer event");
 
         assert_eq!(transfer.source_device, "Yoga");
         assert_eq!(transfer.target_device, "G50");
@@ -458,12 +530,19 @@ mod tests {
         // G50 exit at (1365, 500)
         let exit_y = 500;
         let _ = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 2, dy: 0, timestamp: 106 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 2,
+                dy: 0,
+                timestamp: 106,
+            }),
             Some((1365, exit_y)),
         );
 
         // Check preserved position for G50
-        let preserved = router.cursor_memory.get_last_position("G50").expect("Preserved pos");
+        let preserved = router
+            .cursor_memory
+            .get_last_position("G50")
+            .expect("Preserved pos");
         let expected_norm_y = exit_y as f32 / 768.0;
         assert!((preserved.y - expected_norm_y).abs() < 0.01);
     }
@@ -479,22 +558,32 @@ mod tests {
             timestamp: 107,
         });
         let _ = router.route_input(btn_down, Some((500, 300)));
-        assert!(router.held_input.held_mouse_buttons.contains(&MouseButton::Left));
+        assert!(router
+            .held_input
+            .held_mouse_buttons
+            .contains(&MouseButton::Left));
 
         // Cross edge to Yoga
         let decisions = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 10, dy: 0, timestamp: 108 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 10,
+                dy: 0,
+                timestamp: 108,
+            }),
             Some((1365, 300)),
         );
 
         // Must contain safety release event
         let released = decisions.iter().any(|d| match d {
-            RoutingDecision::Local(InputEvent::Mouse(MouseEvent::Button { button, state, .. })) => {
-                *button == MouseButton::Left && *state == ElementState::Released
-            }
+            RoutingDecision::Local(InputEvent::Mouse(MouseEvent::Button {
+                button, state, ..
+            })) => *button == MouseButton::Left && *state == ElementState::Released,
             _ => false,
         });
-        assert!(released, "Held button must be released during ownership transfer");
+        assert!(
+            released,
+            "Held button must be released during ownership transfer"
+        );
         assert!(router.held_input.held_mouse_buttons.is_empty());
     }
 
@@ -502,7 +591,9 @@ mod tests {
     fn test_9_network_disconnect_safely_returns_local_control() {
         let mut router = create_test_setup();
         router.active_device_id = "Yoga".into();
-        router.held_input.record_mouse_button(MouseButton::Right, ElementState::Pressed);
+        router
+            .held_input
+            .record_mouse_button(MouseButton::Right, ElementState::Pressed);
 
         // Simulate network disconnect / emergency escape
         let decisions = router.force_restore_local_ownership(999);
@@ -512,9 +603,15 @@ mod tests {
         assert!(router.held_input.held_mouse_buttons.is_empty());
 
         // Releases sent to remote Yoga AND local G50
-        assert!(decisions.iter().any(|d| matches!(d, RoutingDecision::Remote { .. })));
-        assert!(decisions.iter().any(|d| matches!(d, RoutingDecision::Local(_) )));
-        assert!(decisions.iter().any(|d| matches!(d, RoutingDecision::Transfer(_) )));
+        assert!(decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Remote { .. })));
+        assert!(decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Local(_))));
+        assert!(decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Transfer(_))));
     }
 
     #[test]
@@ -535,14 +632,21 @@ mod tests {
 
         // Pass 1: A Right -> B Left
         let dec1 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 10, dy: 0, timestamp: 1 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 10,
+                dy: 0,
+                timestamp: 1,
+            }),
             Some((1919, 540)),
         );
         assert_eq!(router.active_device_id(), "B");
-        let t1 = dec1.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t1 = dec1
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t1.source_device, "A");
         assert_eq!(t1.target_device, "B");
         assert_eq!(t1.edge, Edge::Right);
@@ -550,14 +654,21 @@ mod tests {
 
         // Pass 1: B Right -> A Left
         let dec2 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 2000, dy: 0, timestamp: 2 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 2000,
+                dy: 0,
+                timestamp: 2,
+            }),
             None,
         );
         assert_eq!(router.active_device_id(), "A");
-        let t2 = dec2.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t2 = dec2
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t2.source_device, "B");
         assert_eq!(t2.target_device, "A");
         assert_eq!(t2.edge, Edge::Right);
@@ -565,14 +676,21 @@ mod tests {
 
         // Pass 2: A Right -> B Left again! (Circular continuation)
         let dec3 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 10, dy: 0, timestamp: 3 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 10,
+                dy: 0,
+                timestamp: 3,
+            }),
             Some((1919, 540)),
         );
         assert_eq!(router.active_device_id(), "B");
-        let t3 = dec3.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t3 = dec3
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t3.source_device, "A");
         assert_eq!(t3.target_device, "B");
     }
@@ -595,14 +713,21 @@ mod tests {
 
         // Pass 1: A Left -> B Right
         let dec1 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: -10, dy: 0, timestamp: 1 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: -10,
+                dy: 0,
+                timestamp: 1,
+            }),
             Some((0, 540)),
         );
         assert_eq!(router.active_device_id(), "B");
-        let t1 = dec1.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t1 = dec1
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t1.source_device, "A");
         assert_eq!(t1.target_device, "B");
         assert_eq!(t1.edge, Edge::Left);
@@ -610,14 +735,21 @@ mod tests {
 
         // Pass 1: B Left -> A Right
         let dec2 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: -2000, dy: 0, timestamp: 2 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: -2000,
+                dy: 0,
+                timestamp: 2,
+            }),
             None,
         );
         assert_eq!(router.active_device_id(), "A");
-        let t2 = dec2.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t2 = dec2
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t2.source_device, "B");
         assert_eq!(t2.target_device, "A");
         assert_eq!(t2.edge, Edge::Left);
@@ -647,28 +779,42 @@ mod tests {
 
         // Step 1: A Right -> B Left
         let dec1 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 5, dy: 0, timestamp: 1 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 5,
+                dy: 0,
+                timestamp: 1,
+            }),
             Some((1919, 540)),
         );
         assert_eq!(router.active_device_id(), "B");
-        let t1 = dec1.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t1 = dec1
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t1.source_device, "A");
         assert_eq!(t1.target_device, "B");
         assert_eq!(t1.entry_point.x, 0.0);
 
         // Step 2: B moves Right past edge (2560 width) -> C Left
         let dec2 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 3000, dy: 0, timestamp: 2 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 3000,
+                dy: 0,
+                timestamp: 2,
+            }),
             None,
         );
         assert_eq!(router.active_device_id(), "C");
-        let t2 = dec2.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t2 = dec2
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t2.source_device, "B");
         assert_eq!(t2.target_device, "C");
         assert_eq!(t2.edge, Edge::Right);
@@ -676,14 +822,21 @@ mod tests {
 
         // Step 3: C moves Right past edge (1366 width) -> wraps back to A Left!
         let dec3 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 2000, dy: 0, timestamp: 3 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 2000,
+                dy: 0,
+                timestamp: 3,
+            }),
             None,
         );
         assert_eq!(router.active_device_id(), "A");
-        let t3 = dec3.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t3 = dec3
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t3.source_device, "C");
         assert_eq!(t3.target_device, "A");
         assert_eq!(t3.edge, Edge::Right);
@@ -713,14 +866,21 @@ mod tests {
 
         // Step 1: A Left -> C Right
         let dec1 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: -5, dy: 0, timestamp: 1 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: -5,
+                dy: 0,
+                timestamp: 1,
+            }),
             Some((0, 540)),
         );
         assert_eq!(router.active_device_id(), "C");
-        let t1 = dec1.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t1 = dec1
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t1.source_device, "A");
         assert_eq!(t1.target_device, "C");
         assert_eq!(t1.edge, Edge::Left);
@@ -728,14 +888,21 @@ mod tests {
 
         // Step 2: C moves Left past edge -> B Right
         let dec2 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: -3000, dy: 0, timestamp: 2 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: -3000,
+                dy: 0,
+                timestamp: 2,
+            }),
             None,
         );
         assert_eq!(router.active_device_id(), "B");
-        let t2 = dec2.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t2 = dec2
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t2.source_device, "C");
         assert_eq!(t2.target_device, "B");
         assert_eq!(t2.edge, Edge::Left);
@@ -743,14 +910,21 @@ mod tests {
 
         // Step 3: B moves Left past edge -> wraps back to A Right!
         let dec3 = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: -3000, dy: 0, timestamp: 3 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: -3000,
+                dy: 0,
+                timestamp: 3,
+            }),
             None,
         );
         assert_eq!(router.active_device_id(), "A");
-        let t3 = dec3.iter().find_map(|d| match d {
-            RoutingDecision::Transfer(t) => Some(t),
-            _ => None,
-        }).unwrap();
+        let t3 = dec3
+            .iter()
+            .find_map(|d| match d {
+                RoutingDecision::Transfer(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
         assert_eq!(t3.source_device, "B");
         assert_eq!(t3.target_device, "A");
         assert_eq!(t3.edge, Edge::Left);
@@ -787,21 +961,34 @@ mod tests {
             }),
             Some((500, 500)),
         );
-        assert!(router.held_input.held_mouse_buttons.contains(&MouseButton::Left));
+        assert!(router
+            .held_input
+            .held_mouse_buttons
+            .contains(&MouseButton::Left));
 
         // Cross A -> B: safety release must be generated for A
         let dec = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 10, dy: 0, timestamp: 11 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 10,
+                dy: 0,
+                timestamp: 11,
+            }),
             Some((999, 500)),
         );
-        let rel = dec.iter().any(|d| matches!(d,
-            RoutingDecision::Local(InputEvent::Mouse(MouseEvent::Button {
-                button: MouseButton::Left,
-                state: ElementState::Released,
-                ..
-            }))
-        ));
-        assert!(rel, "Held button on A must be released when transferring to B");
+        let rel = dec.iter().any(|d| {
+            matches!(
+                d,
+                RoutingDecision::Local(InputEvent::Mouse(MouseEvent::Button {
+                    button: MouseButton::Left,
+                    state: ElementState::Released,
+                    ..
+                }))
+            )
+        });
+        assert!(
+            rel,
+            "Held button on A must be released when transferring to B"
+        );
         assert!(router.held_input.held_mouse_buttons.is_empty());
 
         // Press Middle button on B
@@ -813,24 +1000,41 @@ mod tests {
             }),
             None,
         );
-        assert!(router.held_input.held_mouse_buttons.contains(&MouseButton::Middle));
+        assert!(router
+            .held_input
+            .held_mouse_buttons
+            .contains(&MouseButton::Middle));
 
         // Cross B -> C: safety release must be sent to B
         let dec_bc = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 1500, dy: 0, timestamp: 13 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 1500,
+                dy: 0,
+                timestamp: 13,
+            }),
             None,
         );
         let rel_b = dec_bc.iter().any(|d| match d {
-            RoutingDecision::Remote { target_device, event } => {
-                target_device == "B" && matches!(event, InputEvent::Mouse(MouseEvent::Button {
-                    button: MouseButton::Middle,
-                    state: ElementState::Released,
-                    ..
-                }))
+            RoutingDecision::Remote {
+                target_device,
+                event,
+            } => {
+                target_device == "B"
+                    && matches!(
+                        event,
+                        InputEvent::Mouse(MouseEvent::Button {
+                            button: MouseButton::Middle,
+                            state: ElementState::Released,
+                            ..
+                        })
+                    )
             }
             _ => false,
         });
-        assert!(rel_b, "Held button on B must be released when transferring to C");
+        assert!(
+            rel_b,
+            "Held button on B must be released when transferring to C"
+        );
         assert!(router.held_input.held_mouse_buttons.is_empty());
     }
 
@@ -857,7 +1061,11 @@ mod tests {
 
         // When A is active: only Local decision, zero Remote to B or C
         let dec = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 1, dy: 1, timestamp: 1 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 1,
+                dy: 1,
+                timestamp: 1,
+            }),
             Some((500, 500)),
         );
         assert_eq!(dec.len(), 1);
@@ -869,7 +1077,11 @@ mod tests {
 
         // When B is active: only Remote(B) decision, zero Local, zero Remote(C)
         let dec = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 1, dy: 1, timestamp: 2 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 1,
+                dy: 1,
+                timestamp: 2,
+            }),
             None,
         );
         assert_eq!(dec.len(), 1);
@@ -884,7 +1096,11 @@ mod tests {
 
         // When C is active: only Remote(C) decision, zero Local, zero Remote(B)
         let dec = router.route_input(
-            InputEvent::Mouse(MouseEvent::MoveRel { dx: 1, dy: 1, timestamp: 3 }),
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 1,
+                dy: 1,
+                timestamp: 3,
+            }),
             None,
         );
         assert_eq!(dec.len(), 1);

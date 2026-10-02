@@ -6,9 +6,9 @@ pub mod pairing;
 pub mod state;
 pub mod types;
 
+use state::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
-use state::AppState;
 
 pub fn run() {
     // On Linux, WebKit 2.52+ with DMA-BUF renderer can fail to load the tauri://

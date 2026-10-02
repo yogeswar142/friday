@@ -9,18 +9,18 @@
 
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEEVENTF_HWHEEL, MOUSEINPUT,
+    SendInput, INPUT, INPUT_0, INPUT_MOUSE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL,
+    MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP,
+    MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
+    MOUSEEVENTF_WHEEL, MOUSEINPUT,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics;
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN};
 
-use friday_core::{DisplayBounds, ElementState, InputEvent, MouseButton, MouseEvent};
 use crate::error::{AgentError, Result};
+use friday_core::{DisplayBounds, ElementState, InputEvent, MouseButton, MouseEvent};
 
 /// Get screen dimensions via GetSystemMetrics (virtual desktop)
 pub fn query_display_info() -> Result<DisplayBounds> {
@@ -47,12 +47,7 @@ pub fn inject_event(event: &InputEvent) -> Result<()> {
         }
         // SAFETY: `inputs` is a valid Vec<INPUT> allocated on this stack frame.
         // SendInput copies the data before returning. nInputs matches inputs.len().
-        let result = unsafe {
-            SendInput(
-                inputs.as_slice(),
-                std::mem::size_of::<INPUT>() as i32,
-            )
-        };
+        let result = unsafe { SendInput(inputs.as_slice(), std::mem::size_of::<INPUT>() as i32) };
         if result == 0 {
             return Err(AgentError::InjectionError(
                 "SendInput returned 0 — possible UIPI block".into(),
@@ -124,7 +119,12 @@ fn build_inputs(event: &InputEvent) -> Result<Vec<INPUT>> {
 }
 
 #[cfg(target_os = "windows")]
-fn make_mouse_input(dx: i32, dy: i32, mouse_data: i32, flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS) -> INPUT {
+fn make_mouse_input(
+    dx: i32,
+    dy: i32,
+    mouse_data: i32,
+    flags: windows::Win32::UI::Input::KeyboardAndMouse::MOUSE_EVENT_FLAGS,
+) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {

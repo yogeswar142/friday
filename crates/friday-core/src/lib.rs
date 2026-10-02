@@ -8,6 +8,10 @@ pub mod topology;
 pub use coordinates::{DisplayBounds, NormalizedPoint};
 pub use error::{CoreError, Result};
 pub use events::{ElementState, InputEvent, KeyCode, KeyboardEvent, MouseButton, MouseEvent};
-pub use ownership::{ActiveDevice, DeviceOwnershipState, ExclusiveOwnershipRouter, RoutingDecision};
+pub use ownership::{
+    ActiveDevice, DeviceOwnershipState, ExclusiveOwnershipRouter, RoutingDecision,
+};
 pub use state::{CursorMemory, HeldInputState};
-pub use topology::{CircularTopology, Edge, InputRouter, ScreenLayout, ScreenTopology, TransferEvent};
+pub use topology::{
+    CircularTopology, Edge, InputRouter, ScreenLayout, ScreenTopology, TransferEvent,
+};

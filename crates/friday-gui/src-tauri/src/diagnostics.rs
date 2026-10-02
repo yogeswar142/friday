@@ -1,9 +1,8 @@
-use std::time::Instant;
-use friday_core::{
-    DisplayBounds, InputEvent, MouseEvent, NormalizedPoint,
-    ScreenLayout, CircularTopology, Edge,
-};
 use crate::types::{BenchmarkReportDto, DiagnosticCheckItem, DiagnosticReportDto};
+use friday_core::{
+    CircularTopology, DisplayBounds, Edge, InputEvent, MouseEvent, NormalizedPoint, ScreenLayout,
+};
+use std::time::Instant;
 
 pub fn run_system_diagnostics(
     engine_state: &str,
@@ -60,7 +59,11 @@ pub fn run_system_diagnostics(
         name: "Circular Topology Ring".into(),
         passed: topo_valid,
         detail: if topo_valid {
-            format!("{} nodes in circular ring: {}", ring_nodes.len(), ring_nodes.join(" → "))
+            format!(
+                "{} nodes in circular ring: {}",
+                ring_nodes.len(),
+                ring_nodes.join(" → ")
+            )
         } else {
             "Need at least 2 connected devices in circular ring".into()
         },
@@ -83,7 +86,10 @@ pub fn run_system_diagnostics(
     checks.push(DiagnosticCheckItem {
         name: "Network Latency & Jitter".into(),
         passed: net_ok,
-        detail: format!("{:.2} ms roundtrip latency, {:.1}% packet loss", latency_ms, packet_loss_pct),
+        detail: format!(
+            "{:.2} ms roundtrip latency, {:.1}% packet loss",
+            latency_ms, packet_loss_pct
+        ),
     });
 
     // Check 5: Display Server Access
@@ -98,7 +104,8 @@ pub fn run_system_diagnostics(
         engine_state: engine_state.to_string(),
         platform: os.to_string(),
         architecture: arch.to_string(),
-        os_version: std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| display_server.to_string()),
+        os_version: std::env::var("XDG_CURRENT_DESKTOP")
+            .unwrap_or_else(|_| display_server.to_string()),
         input_backend: input_backend.to_string(),
         network_transport: "UDP with Bincode packet protocol (sub-millisecond)".into(),
         latency_ms,
@@ -201,7 +208,11 @@ mod tests {
         assert!(report.topology_valid);
         assert_eq!(report.checks.len(), 5);
         for check in &report.checks {
-            assert!(check.passed, "Check '{}' failed: {}", check.name, check.detail);
+            assert!(
+                check.passed,
+                "Check '{}' failed: {}",
+                check.name, check.detail
+            );
         }
     }
 

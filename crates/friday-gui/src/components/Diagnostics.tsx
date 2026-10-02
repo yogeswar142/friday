@@ -34,6 +34,9 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [showLogTerminal, setShowLogTerminal] = useState(false);
+  const [copiedPairing, setCopiedPairing] = useState(false);
+  const [copiedAll, setCopiedAll] = useState(false);
+
 
   const copyDiagnosticReport = () => {
     if (!report) return;
@@ -264,7 +267,85 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
         </div>
       )}
 
-      {/* Internal Log Viewer */}
+      {/* ── Dedicated Pairing Logs ──────────────────────────────── */}
+      {(() => {
+        const pairingLogs = logs.filter((l) => l.target === "friday_network::pairing");
+
+        const copyPairingLogs = () => {
+          const text = pairingLogs.length === 0
+            ? "(no pairing logs yet)"
+            : pairingLogs
+                .map((l) => `[${l.timestamp}] ${l.level}  ${l.message}`)
+                .join("\n");
+          navigator.clipboard.writeText(
+            `=== FRIDAY PAIRING LOGS ===\n${text}\n===========================`
+          );
+          setCopiedPairing(true);
+          setTimeout(() => setCopiedPairing(false), 2000);
+        };
+
+        return (
+          <div className="card" style={{ gap: "10px" }}>
+            <div className="card-header">
+              <span className="card-title">
+                <Terminal size={16} color="#06b6d4" />
+                Pairing Logs ({pairingLogs.length} entries)
+              </span>
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={copyPairingLogs}
+                title="Copy pairing logs to clipboard"
+              >
+                <Copy size={12} />
+                <span>{copiedPairing ? "Copied!" : "Copy Logs"}</span>
+              </button>
+            </div>
+
+            {pairingLogs.length === 0 ? (
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", padding: "8px 0" }}>
+                No pairing events yet. Trigger a pairing attempt to see detailed step-by-step logs here.
+              </p>
+            ) : (
+              <div
+                style={{
+                  background: "#05070a",
+                  padding: "14px",
+                  borderRadius: "var(--radius-sm)",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "12px",
+                  maxHeight: "280px",
+                  overflowY: "auto",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                  border: "1px solid var(--border-subtle)",
+                }}
+              >
+                {pairingLogs.map((log, i) => (
+                  <div key={i} style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    <span style={{ color: "#64748b", flexShrink: 0 }}>[{log.timestamp}]</span>
+                    <span
+                      style={{
+                        color:
+                          log.level === "INFO" ? "#06b6d4"
+                          : log.level === "WARN" ? "#f59e0b"
+                          : "#f43f5e",
+                        fontWeight: 600,
+                        flexShrink: 0,
+                      }}
+                    >
+                      {log.level}
+                    </span>
+                    <span style={{ color: "#f1f5f9", whiteSpace: "pre-wrap" }}>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* Internal Log Viewer (full engine log) */}
       {showLogTerminal && (
         <div className="card" style={{ gap: "10px" }}>
           <div className="card-header">
@@ -272,6 +353,21 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
               <Terminal size={16} color="#06b6d4" />
               Engine Log Buffer ({logs.length} entries)
             </span>
+            <button
+              className="btn btn-sm btn-outline"
+              onClick={() => {
+                const text = logs
+                  .map((l) => `[${l.timestamp}] ${l.level}  ${l.target}: ${l.message}`)
+                  .join("\n");
+                navigator.clipboard.writeText(`=== FRIDAY ENGINE LOGS ===\n${text}\n==========================`);
+                setCopiedAll(true);
+                setTimeout(() => setCopiedAll(false), 2000);
+              }}
+              title="Copy all engine logs"
+            >
+              <Copy size={12} />
+              <span>{copiedAll ? "Copied!" : "Copy All"}</span>
+            </button>
           </div>
 
           <div

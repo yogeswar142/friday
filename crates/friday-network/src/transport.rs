@@ -1,9 +1,9 @@
+use crate::protocol::NetworkPacket;
+use friday_core::{CoreError, InputEvent, Result};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
-use friday_core::{CoreError, InputEvent, Result};
-use crate::protocol::NetworkPacket;
 
 pub struct NetworkTransport {
     socket: Arc<UdpSocket>,

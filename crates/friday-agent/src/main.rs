@@ -14,7 +14,6 @@
 ///   SENDER MODE: capture XQueryPointer → detect edge → UDP → peer
 ///   RECEIVER MODE: UDP → XTestFakeEvent / SendInput
 ///   HANDOFF: when edge detected, send HandoffControl → peer becomes sender
-
 use std::{
     net::SocketAddr,
     sync::{
@@ -115,9 +114,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             remote_w,
             remote_h,
         } => run_sender(&bind, &peer, direct, edge_px, dwell_ms, remote_w, remote_h).await,
-        Commands::Connect { peer, bind, edge_px, dwell_ms } => {
-            run_connect(&bind, &peer, edge_px, dwell_ms).await
-        }
+        Commands::Connect {
+            peer,
+            bind,
+            edge_px,
+            dwell_ms,
+        } => run_connect(&bind, &peer, edge_px, dwell_ms).await,
     }
 }
 
@@ -302,7 +304,10 @@ async fn run_sender(
     let hello_bytes = hello.encode()?;
     let hello_packet = NetworkPacket::new_control(hello_bytes);
     let encoded = hello_packet.encode().map_err(|e| e.to_string())?;
-    transport.send_raw_to(&encoded, peer).await.map_err(|e| e.to_string())?;
+    transport
+        .send_raw_to(&encoded, peer)
+        .await
+        .map_err(|e| e.to_string())?;
     info!("Sent Hello to {}", peer);
 
     // Edge handoff handler: when edge hit, activate remote control
@@ -434,8 +439,7 @@ async fn run_connect(
                     ScreenEdge::Bottom => trigger.norm_x,
                 };
                 let entry_y = match trigger.edge {
-                    ScreenEdge::Right
-                    | ScreenEdge::Left => trigger.norm_y,
+                    ScreenEdge::Right | ScreenEdge::Left => trigger.norm_y,
                     ScreenEdge::Top => 0.0,
                     ScreenEdge::Bottom => 1.0,
                 };
@@ -480,7 +484,10 @@ async fn run_connect(
     let hello_bytes = hello.encode()?;
     let packet = NetworkPacket::new_control(hello_bytes);
     let enc = packet.encode().map_err(|e| e.to_string())?;
-    transport.send_raw_to(&enc, peer).await.map_err(|e| e.to_string())?;
+    transport
+        .send_raw_to(&enc, peer)
+        .await
+        .map_err(|e| e.to_string())?;
     info!("Sent Hello to peer at {}", peer);
 
     println!("✓ FRIDAY Connect established.");

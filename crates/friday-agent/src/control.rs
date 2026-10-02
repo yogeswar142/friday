@@ -51,8 +51,12 @@ pub enum ControlMessage {
     /// Safety: release all held inputs immediately
     ReleaseAll,
     /// Heartbeat for connection liveness
-    Ping { seq: u32 },
-    Pong { seq: u32 },
+    Ping {
+        seq: u32,
+    },
+    Pong {
+        seq: u32,
+    },
     /// Graceful disconnect
     Goodbye,
 }
