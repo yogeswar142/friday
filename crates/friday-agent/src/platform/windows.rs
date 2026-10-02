@@ -118,6 +118,8 @@ fn build_inputs(event: &InputEvent) -> Result<Vec<INPUT>> {
     }
 }
 
+pub const FRIDAY_INJECTED_MAGIC: usize = 0x46524944;
+
 #[cfg(target_os = "windows")]
 fn make_mouse_input(
     dx: i32,
@@ -134,8 +136,9 @@ fn make_mouse_input(
                 mouseData: mouse_data as u32,
                 dwFlags: flags,
                 time: 0,
-                dwExtraInfo: 0,
+                dwExtraInfo: FRIDAY_INJECTED_MAGIC,
             },
         },
     }
 }
+

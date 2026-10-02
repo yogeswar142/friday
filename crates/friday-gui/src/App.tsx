@@ -229,12 +229,13 @@ export const App: React.FC = () => {
     setTheme(newSettings.appearance);
   };
 
-  const handleToggleRole = async (isHost: boolean) => {
+  const handleClearLogs = async () => {
     try {
-      await api.setDeviceRole(isHost);
-      await refreshAllData();
+      await api.clearLogs();
+      const updated = await api.getLogs();
+      setLogs(updated);
     } catch (e) {
-      console.error("Failed to switch device role:", e);
+      console.error("Failed to clear logs:", e);
     }
   };
 
@@ -276,7 +277,6 @@ export const App: React.FC = () => {
             pendingRequests={pendingRequests}
             activeDeviceId={status?.active_device_id || ""}
             isHost={status?.is_host ?? true}
-            onToggleRole={handleToggleRole}
             onInitiatePairing={handleInitiatePairing}
             onAddManualDevice={handleManualAddDevice}
             onUnpairDevice={handleUnpairDevice}
@@ -306,6 +306,7 @@ export const App: React.FC = () => {
             report={diagnosticReport}
             benchmark={benchmarkReport}
             logs={logs}
+            onClearLogs={handleClearLogs}
             onRunDiagnostics={handleRunDiagnostics}
             onRunBenchmark={handleRunBenchmark}
             isLoadingDiag={isLoadingDiag}

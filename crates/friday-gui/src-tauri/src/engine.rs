@@ -21,6 +21,11 @@ static HOOK_EVENT_TX: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::
 static LAST_HOOK_X: AtomicI32 = AtomicI32::new(0);
 static LAST_HOOK_Y: AtomicI32 = AtomicI32::new(0);
 static HAS_LAST_HOOK_PT: AtomicBool = AtomicBool::new(false);
+static FREEZE_CURSOR_X: AtomicI32 = AtomicI32::new(-1);
+static FREEZE_CURSOR_Y: AtomicI32 = AtomicI32::new(-1);
+static IS_SELF_SETTING_CURSOR: AtomicBool = AtomicBool::new(false);
+
+pub const FRIDAY_INJECTED_MAGIC: usize = 0x46524944; // "FRID"
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
@@ -83,10 +88,12 @@ pub fn get_local_cursor_pos() -> Option<(i32, i32)> {
 pub fn set_local_cursor_pos(x: i32, y: i32) {
     #[cfg(target_os = "windows")]
     {
+        IS_SELF_SETTING_CURSOR.store(true, Ordering::SeqCst);
         // SAFETY: SetCursorPos is safe with integer screen coordinates
         unsafe {
             let _ = SetCursorPos(x, y);
         }
+        IS_SELF_SETTING_CURSOR.store(false, Ordering::SeqCst);
     }
     #[cfg(target_os = "linux")]
     {
@@ -99,17 +106,35 @@ pub fn set_local_cursor_pos(x: i32, y: i32) {
 }
 
 pub fn inject_os_event(event: &InputEvent) {
-    #[cfg(target_os = "windows")]
-    {
-        let _ = friday_agent::platform::windows::inject_event(event);
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = friday_agent::platform::linux::inject_event(event);
-    }
-    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-    {
-        let _ = event;
+    match event {
+        InputEvent::Mouse(MouseEvent::MoveRel { dx, dy, .. }) => {
+            if let Some((cur_x, cur_y)) = get_local_cursor_pos() {
+                let (screen_w, screen_h) = get_screen_dimensions();
+                let new_x = (cur_x + *dx as i32).clamp(0, screen_w - 1);
+                let new_y = (cur_y + *dy as i32).clamp(0, screen_h - 1);
+                set_local_cursor_pos(new_x, new_y);
+            }
+        }
+        InputEvent::Mouse(MouseEvent::MoveAbs { x_norm, y_norm, .. }) => {
+            let (screen_w, screen_h) = get_screen_dimensions();
+            let new_x = (((*x_norm as f32) / 65535.0) * (screen_w - 1) as f32).round() as i32;
+            let new_y = (((*y_norm as f32) / 65535.0) * (screen_h - 1) as f32).round() as i32;
+            set_local_cursor_pos(new_x.clamp(0, screen_w - 1), new_y.clamp(0, screen_h - 1));
+        }
+        other => {
+            #[cfg(target_os = "windows")]
+            {
+                let _ = friday_agent::platform::windows::inject_event(other);
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _ = friday_agent::platform::linux::inject_event(other);
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            {
+                let _ = other;
+            }
+        }
     }
 }
 
@@ -124,14 +149,21 @@ unsafe extern "system" fn low_level_mouse_proc(
     if n_code >= 0 {
         // Emergency escape: check if Escape key is pressed while controlling remote
         if GetAsyncKeyState(VK_ESCAPE.0 as i32) < 0 {
+            FREEZE_CURSOR_X.store(-1, Ordering::Relaxed);
+            FREEZE_CURSOR_Y.store(-1, Ordering::Relaxed);
             IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
             return CallNextHookEx(None, n_code, w_param, l_param);
         }
 
         if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
             let info = *(l_param.0 as *const MSLLHOOKSTRUCT);
-            // Ignore injected events (so SendInput events on client are never captured or blocked!)
-            if (info.flags & 1) != 0 {
+
+            // Filter out FRIDAY's own programmatic events and self-setting cursor actions.
+            // NOTE: We MUST NOT filter by (info.flags & 1) != 0 because laptop trackpads /
+            // touchpads (Synaptics, ELAN, Precision Touchpad) frequently report their input
+            // via driver-injected events (bit 0 = 1). Checking dwExtraInfo and IS_SELF_SETTING_CURSOR
+            // ensures physical mouse AND laptop touchpads work flawlessly!
+            if IS_SELF_SETTING_CURSOR.load(Ordering::SeqCst) || info.dwExtraInfo == FRIDAY_INJECTED_MAGIC {
                 return CallNextHookEx(None, n_code, w_param, l_param);
             }
 
@@ -139,26 +171,47 @@ unsafe extern "system" fn low_level_mouse_proc(
 
             match msg {
                 WM_MOUSEMOVE => {
-                    if !HAS_LAST_HOOK_PT.swap(true, Ordering::SeqCst) {
+                    let fx = FREEZE_CURSOR_X.load(Ordering::Relaxed);
+                    let fy = FREEZE_CURSOR_Y.load(Ordering::Relaxed);
+
+                    // If this event was triggered by our own freeze reposition, consume without sending delta
+                    if fx >= 0 && fy >= 0 && info.pt.x == fx && info.pt.y == fy {
+                        return LRESULT(1);
+                    }
+
+                    let dx;
+                    let dy;
+
+                    if fx >= 0 && fy >= 0 {
+                        // Delta is movement relative to the frozen host anchor position (works for both physical mouse AND laptop touchpad!)
+                        dx = info.pt.x - fx;
+                        dy = info.pt.y - fy;
+
+                        // Lock cursor back at the freeze anchor
+                        set_local_cursor_pos(fx, fy);
+                    } else if !HAS_LAST_HOOK_PT.swap(true, Ordering::SeqCst) {
                         LAST_HOOK_X.store(info.pt.x, Ordering::Relaxed);
                         LAST_HOOK_Y.store(info.pt.y, Ordering::Relaxed);
+                        dx = 0;
+                        dy = 0;
                     } else {
                         let prev_x = LAST_HOOK_X.swap(info.pt.x, Ordering::Relaxed);
                         let prev_y = LAST_HOOK_Y.swap(info.pt.y, Ordering::Relaxed);
-                        let dx = info.pt.x - prev_x;
-                        let dy = info.pt.y - prev_y;
+                        dx = info.pt.x - prev_x;
+                        dy = info.pt.y - prev_y;
+                    }
 
-                        if dx != 0 || dy != 0 {
-                            if let Some(tx) = HOOK_EVENT_TX.get() {
-                                let _ = tx.send(InputEvent::Mouse(MouseEvent::MoveRel {
-                                    dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                                    dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
-                                    timestamp: 0,
-                                }));
-                            }
+                    if dx != 0 || dy != 0 {
+                        if let Some(tx) = HOOK_EVENT_TX.get() {
+                            let _ = tx.send(InputEvent::Mouse(MouseEvent::MoveRel {
+                                dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                timestamp: 0,
+                            }));
                         }
                     }
-                    // Consume the movement so the local cursor stays stationary
+
+                    // Consume the movement so the local host cursor stays completely stationary
                     return LRESULT(1);
                 }
                 WM_LBUTTONDOWN => {
@@ -341,6 +394,8 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
     let mut last_second = Instant::now();
     let mut packets_this_sec = 0u64;
     let mut bytes_this_sec = 0u64;
+    let mut client_last_move_log = Instant::now();
+    let mut client_move_count = 0u32;
 
     while !stop_flag.load(Ordering::Relaxed) {
         match socket.recv_from(&mut buf) {
@@ -351,8 +406,51 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                 if let Ok(packet) = NetworkPacket::decode(&buf[..len]) {
                     match packet.payload {
                         PacketPayload::Input(event) => {
+                            if let Ok(mut app) = shared_state.lock() {
+                                if app.is_host {
+                                    app.is_host = false;
+                                    app.persist_config();
+                                }
+                            }
                             // Only inject into OS if we are NOT currently controlling remote
                             if !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+                                match &event {
+                                    InputEvent::Mouse(MouseEvent::Button { button, state, .. }) => {
+                                        if let Ok(mut app) = shared_state.lock() {
+                                            app.add_log(
+                                                "INFO",
+                                                "friday_core::mouse",
+                                                &format!("Client injected mouse button {:?} {:?} from Host ({})", button, state, src),
+                                            );
+                                        }
+                                    }
+                                    InputEvent::Mouse(MouseEvent::Scroll { dx, dy, .. }) => {
+                                        if let Ok(mut app) = shared_state.lock() {
+                                            app.add_log(
+                                                "INFO",
+                                                "friday_core::mouse",
+                                                &format!("Client injected scroll (dx: {}, dy: {}) from Host ({})", dx, dy, src),
+                                            );
+                                        }
+                                    }
+                                    InputEvent::Mouse(MouseEvent::MoveRel { .. }) => {
+                                        client_move_count += 1;
+                                        if client_last_move_log.elapsed() >= Duration::from_millis(1000) {
+                                            if let Some((cx, cy)) = get_local_cursor_pos() {
+                                                if let Ok(mut app) = shared_state.lock() {
+                                                    app.add_log(
+                                                        "INFO",
+                                                        "friday_core::mouse",
+                                                        &format!("Client active: injected {} mouse moves from Host ({}) | cursor at ({}, {})", client_move_count, src, cx, cy),
+                                                    );
+                                                }
+                                            }
+                                            client_move_count = 0;
+                                            client_last_move_log = Instant::now();
+                                        }
+                                    }
+                                    _ => {}
+                                }
                                 inject_os_event(&event);
                             }
                         }
@@ -412,6 +510,10 @@ fn handle_incoming_control(
                     let local_id = app.local_device_id.clone();
                     app.active_device_id = local_id.clone();
                     app.topology.set_active_device(&local_id);
+                    if app.is_host {
+                        app.is_host = false;
+                        app.persist_config();
+                    }
                     for d in &mut app.devices {
                         d.is_active = d.id == local_id;
                     }
@@ -419,7 +521,7 @@ fn handle_incoming_control(
                         "INFO",
                         "friday_core::ownership",
                         &format!(
-                            "Host mouse entered screen — placed at ({}, {})",
+                            "Host mouse entered screen — placed at ({}, {}) (Client Screen Mode)",
                             target_x, target_y
                         ),
                     );
@@ -583,6 +685,11 @@ fn run_mouse_router(
     let mut seq = 0u32;
     let threshold = 4i32;
 
+    let mut last_move_log_time = Instant::now();
+    let mut move_log_count = 0u32;
+    let mut move_log_dx = 0i32;
+    let mut move_log_dy = 0i32;
+
     while !stop_flag.load(Ordering::Relaxed) {
         let (is_running, is_paused, is_host, local_id, active_id, connected_peers, dwell_ms) = {
             let app = shared_state.lock().unwrap();
@@ -672,6 +779,16 @@ fn run_mouse_router(
 
                             if !is_same {
                                 dwell_start = Some((hit_edge, now));
+                                if let Ok(mut app) = shared_state.lock() {
+                                    app.add_log(
+                                        "INFO",
+                                        "friday_core::mouse",
+                                        &format!(
+                                            "Mouse dwelling on {:?} edge at ({}, {}) → handoff target: {} ({}ms dwell)",
+                                            hit_edge, cur_x, cur_y, target_dev.name, dwell_ms
+                                        ),
+                                    );
+                                }
                             } else if let Some((_, start)) = dwell_start {
                                 if start.elapsed() >= Duration::from_millis(dwell_ms) {
                                     // ── TRIGGER HANDOFF TO TARGET DEVICE ──
@@ -718,15 +835,17 @@ fn run_mouse_router(
                                         }
                                         app.add_log(
                                             "INFO",
-                                            "friday_core::ownership",
+                                            "friday_core::mouse",
                                             &format!(
-                                                "Cursor crossed {:?} edge → Active Cursor Owner: {}",
-                                                hit_edge, target_dev.name
+                                                "Mouse crossed {:?} edge ({}, {})! Active ownership transferred to {} ({}) at entry ({:.3}, {:.3})",
+                                                hit_edge, cur_x, cur_y, target_dev.name, target_dev.ip_address, entry_point.x, entry_point.y
                                             ),
                                         );
                                         app.persist_config();
                                     }
 
+                                    FREEZE_CURSOR_X.store(cur_x, Ordering::Relaxed);
+                                    FREEZE_CURSOR_Y.store(cur_y, Ordering::Relaxed);
                                     IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
                                     HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
                                     dwell_start = None;
@@ -752,94 +871,137 @@ fn run_mouse_router(
                 drained = true;
                 seq = seq.wrapping_add(1);
 
-                // Update virtual cursor coordinates on active remote device
-                if let InputEvent::Mouse(MouseEvent::MoveRel { dx, dy, .. }) = evt {
-                    remote_x = (remote_x + dx as f32).clamp(0.0, remote_w - 1.0);
-                    remote_y = (remote_y + dy as f32).clamp(0.0, remote_h - 1.0);
+                // Update virtual cursor coordinates on active remote device and log key inputs
+                match &evt {
+                    InputEvent::Mouse(MouseEvent::MoveRel { dx, dy, .. }) => {
+                        remote_x = (remote_x + *dx as f32).clamp(0.0, remote_w - 1.0);
+                        remote_y = (remote_y + *dy as f32).clamp(0.0, remote_h - 1.0);
+                        move_log_count += 1;
+                        move_log_dx += *dx as i32;
+                        move_log_dy += *dy as i32;
+                    }
+                    InputEvent::Mouse(MouseEvent::Button { button, state, .. }) => {
+                        if let Ok(mut app) = shared_state.lock() {
+                            app.add_log(
+                                "INFO",
+                                "friday_core::mouse",
+                                &format!(
+                                    "Host forwarded mouse button {:?} {:?} to {}",
+                                    button, state, current_target_device_id
+                                ),
+                            );
+                        }
+                    }
+                    InputEvent::Mouse(MouseEvent::Scroll { dx, dy, .. }) => {
+                        if let Ok(mut app) = shared_state.lock() {
+                            app.add_log(
+                                "INFO",
+                                "friday_core::mouse",
+                                &format!(
+                                    "Host forwarded mouse scroll (dx: {}, dy: {}) to {}",
+                                    dx, dy, current_target_device_id
+                                ),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
 
-                    // Check which edge of the active remote device the virtual cursor reached
-                    let virtual_edge = if remote_x >= remote_w - 1.0 - threshold as f32 {
-                        Some(Edge::Right)
-                    } else if remote_x <= threshold as f32 {
-                        Some(Edge::Left)
-                    } else if remote_y <= threshold as f32 {
-                        Some(Edge::Top)
-                    } else if remote_y >= remote_h - 1.0 - threshold as f32 {
-                        Some(Edge::Bottom)
-                    } else {
-                        None
+                // Check which edge of the active remote device the virtual cursor reached
+                let virtual_edge = if remote_x >= remote_w - 1.0 - threshold as f32 {
+                    Some(Edge::Right)
+                } else if remote_x <= threshold as f32 {
+                    Some(Edge::Left)
+                } else if remote_y <= threshold as f32 {
+                    Some(Edge::Top)
+                } else if remote_y >= remote_h - 1.0 - threshold as f32 {
+                    Some(Edge::Bottom)
+                } else {
+                    None
+                };
+
+                if let Some(hit_edge) = virtual_edge {
+                    // Query CircularTopology: which device connects at this edge of the active device?
+                    let next_target = {
+                        let app = shared_state.lock().unwrap();
+                        app.topology
+                            .neighbor_at_edge(&current_target_device_id, hit_edge)
+                            .map(|s| s.to_string())
                     };
 
-                    if let Some(hit_edge) = virtual_edge {
-                        // Query CircularTopology: which device connects at this edge of the active device?
-                        let next_target = {
-                            let app = shared_state.lock().unwrap();
-                            app.topology
-                                .neighbor_at_edge(&current_target_device_id, hit_edge)
-                                .map(|s| s.to_string())
+                    if let Some(next_id) = next_target {
+                        let now = Instant::now();
+                        let is_same = match return_dwell_start {
+                            Some((e, _)) => e == hit_edge,
+                            None => false,
                         };
 
-                        if let Some(next_id) = next_target {
-                            let now = Instant::now();
-                            let is_same = match return_dwell_start {
-                                Some((e, _)) => e == hit_edge,
-                                None => false,
-                            };
+                        if !is_same {
+                            return_dwell_start = Some((hit_edge, now));
+                            if let Ok(mut app) = shared_state.lock() {
+                                app.add_log(
+                                    "INFO",
+                                    "friday_core::mouse",
+                                    &format!(
+                                        "Virtual cursor on {} hit {:?} edge at ({:.0}, {:.0}) — dwell started for next peer {}",
+                                        current_target_device_id, hit_edge, remote_x, remote_y, next_id
+                                    ),
+                                );
+                            }
+                        } else if let Some((_, start)) = return_dwell_start {
+                            if start.elapsed() >= Duration::from_millis(dwell_ms) {
+                                let norm_x = (remote_x / remote_w).clamp(0.0, 1.0);
+                                let norm_y = (remote_y / remote_h).clamp(0.0, 1.0);
+                                let entry_point = CircularTopology::calculate_entry_point(
+                                    hit_edge,
+                                    NormalizedPoint {
+                                        x: norm_x,
+                                        y: norm_y,
+                                    },
+                                );
 
-                            if !is_same {
-                                return_dwell_start = Some((hit_edge, now));
-                            } else if let Some((_, start)) = return_dwell_start {
-                                if start.elapsed() >= Duration::from_millis(dwell_ms) {
-                                    let norm_x = (remote_x / remote_w).clamp(0.0, 1.0);
-                                    let norm_y = (remote_y / remote_h).clamp(0.0, 1.0);
-                                    let entry_point = CircularTopology::calculate_entry_point(
-                                        hit_edge,
-                                        NormalizedPoint {
-                                            x: norm_x,
-                                            y: norm_y,
-                                        },
+                                if next_id == local_id {
+                                    // ── CIRCULAR RETURN TO PHYSICAL MOUSE SOURCE (LOCAL MACHINE) ──
+                                    info!(
+                                        "Circular routing: virtual cursor on {} crossed {:?} edge → returning ownership to Physical Mouse machine ({})",
+                                        current_target_device_id, hit_edge, local_id
                                     );
 
-                                    if next_id == local_id {
-                                        // ── CIRCULAR RETURN TO PHYSICAL MOUSE SOURCE (LOCAL MACHINE) ──
-                                        info!(
-                                            "Circular routing: virtual cursor on {} crossed {:?} edge → returning ownership to Physical Mouse machine ({})",
-                                            current_target_device_id, hit_edge, local_id
+                                    // Release any held buttons on the remote device
+                                    if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
+                                        let packet = NetworkPacket::new_control(bytes);
+                                        if let Ok(enc) = packet.encode() {
+                                            let dest = format!("{}:{}", target_ip, target_port);
+                                            let _ = send_socket.send_to(&enc, &dest);
+                                        }
+                                    }
+
+                                    FREEZE_CURSOR_X.store(-1, Ordering::Relaxed);
+                                    FREEZE_CURSOR_Y.store(-1, Ordering::Relaxed);
+                                    IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+
+                                    let local_entry_x = ((entry_point.x * (screen_w - 1) as f32).round() as i32).clamp(0, screen_w - 1);
+                                    let local_entry_y = ((entry_point.y * (screen_h - 1) as f32).round() as i32).clamp(0, screen_h - 1);
+
+                                    set_local_cursor_pos(local_entry_x, local_entry_y);
+
+                                    if let Ok(mut app) = shared_state.lock() {
+                                        let local_id_clone = app.local_device_id.clone();
+                                        app.active_device_id = local_id_clone.clone();
+                                        app.topology.set_active_device(&local_id_clone);
+                                        for d in &mut app.devices {
+                                            d.is_active = d.id == local_id_clone;
+                                        }
+                                        app.add_log(
+                                            "INFO",
+                                            "friday_core::mouse",
+                                            &format!(
+                                                "Virtual cursor crossed {:?} edge of {} → returned to Host ({}) at ({}, {})",
+                                                hit_edge, current_target_device_id, local_id_clone, local_entry_x, local_entry_y
+                                            ),
                                         );
-
-                                        // Release any held buttons on the remote device
-                                        if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
-                                            let packet = NetworkPacket::new_control(bytes);
-                                            if let Ok(enc) = packet.encode() {
-                                                let dest = format!("{}:{}", target_ip, target_port);
-                                                let _ = send_socket.send_to(&enc, &dest);
-                                            }
-                                        }
-
-                                        IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
-
-                                        let local_entry_x = ((entry_point.x * (screen_w - 1) as f32).round() as i32).clamp(0, screen_w - 1);
-                                        let local_entry_y = ((entry_point.y * (screen_h - 1) as f32).round() as i32).clamp(0, screen_h - 1);
-
-                                        set_local_cursor_pos(local_entry_x, local_entry_y);
-
-                                        if let Ok(mut app) = shared_state.lock() {
-                                            let local_id_clone = app.local_device_id.clone();
-                                            app.active_device_id = local_id_clone.clone();
-                                            app.topology.set_active_device(&local_id_clone);
-                                            for d in &mut app.devices {
-                                                d.is_active = d.id == local_id_clone;
-                                            }
-                                            app.add_log(
-                                                "INFO",
-                                                "friday_core::ownership",
-                                                &format!(
-                                                    "Circular routing: {} ({:?}) → Physical Mouse active (cursor placed at {}, {})",
-                                                    current_target_device_id, hit_edge, local_entry_x, local_entry_y
-                                                ),
-                                            );
-                                            app.persist_config();
-                                        }
+                                        app.persist_config();
+                                    }
 
                                         return_dwell_start = None;
                                         break;
@@ -915,7 +1077,6 @@ fn run_mouse_router(
                     } else {
                         return_dwell_start = None;
                     }
-                }
 
                 // Send input packet over UDP to target peer
                 let packet = NetworkPacket::new_input(evt, seq);
@@ -923,6 +1084,25 @@ fn run_mouse_router(
                     let dest = format!("{}:{}", target_ip, target_port);
                     let _ = send_socket.send_to(&enc, &dest);
                 }
+            }
+
+            if last_move_log_time.elapsed() >= Duration::from_millis(1000) {
+                if move_log_count > 0 {
+                    if let Ok(mut app) = shared_state.lock() {
+                        app.add_log(
+                            "INFO",
+                            "friday_core::mouse",
+                            &format!(
+                                "Routing mouse to {}: sent {} moves (dx: {:+}, dy: {:+}) | virtual cursor: ({:.0}, {:.0})",
+                                current_target_device_id, move_log_count, move_log_dx, move_log_dy, remote_x, remote_y
+                            ),
+                        );
+                    }
+                    move_log_count = 0;
+                    move_log_dx = 0;
+                    move_log_dy = 0;
+                }
+                last_move_log_time = Instant::now();
             }
 
             // Also check if active_id was changed via GUI (e.g. user clicked Take Control on local device)
@@ -963,6 +1143,8 @@ pub fn notify_active_device_changed(shared_state: &SharedAppState, new_active_id
 
     if is_local {
         // Host took control back locally!
+        FREEZE_CURSOR_X.store(-1, Ordering::Relaxed);
+        FREEZE_CURSOR_Y.store(-1, Ordering::Relaxed);
         IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
             if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
@@ -976,6 +1158,10 @@ pub fn notify_active_device_changed(shared_state: &SharedAppState, new_active_id
         }
     } else if let Some(dest) = target_addr {
         // Host jumped control directly to a remote client screen
+        if let Some((cur_x, cur_y)) = get_local_cursor_pos() {
+            FREEZE_CURSOR_X.store(cur_x, Ordering::Relaxed);
+            FREEZE_CURSOR_Y.store(cur_y, Ordering::Relaxed);
+        }
         IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
         HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
 

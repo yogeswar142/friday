@@ -297,6 +297,9 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
         { timestamp: "17:15:05", level: "INFO", target: "friday_network::transport", message: "UDP Transport listening on 0.0.0.0:48700" },
       ] as unknown as T;
 
+    case "clear_logs":
+      return undefined as unknown as T;
+
     case "get_pending_pair_requests":
       return [] as unknown as T;
 
@@ -349,6 +352,7 @@ export const api = {
   getPlatformPermissions: () => invokeTauri<PlatformPermissions>("get_platform_permissions"),
   openPermissionSettings: () => invokeTauri<void>("open_permission_settings"),
   getLogs: () => invokeTauri<LogEntry[]>("get_logs"),
+  clearLogs: () => invokeTauri<void>("clear_logs"),
   /** Send pairing request to remote device — blocks up to 30s waiting for user accept */
   initiatePairing: (deviceId: string, pin: string, targetIp?: string) =>
     invokeTauri<boolean>("initiate_pairing", {

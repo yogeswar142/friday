@@ -67,6 +67,7 @@ pub fn run() {
             commands::get_platform_permissions,
             commands::open_permission_settings,
             commands::get_logs,
+            commands::clear_logs,
             commands::initiate_pairing,
             commands::get_pending_pair_requests,
             commands::respond_to_pair_request,

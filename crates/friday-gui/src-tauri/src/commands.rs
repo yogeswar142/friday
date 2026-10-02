@@ -182,6 +182,7 @@ pub fn add_manual_device(
             dev_name, new_device.ip_address
         ),
     );
+    app.is_host = true;
     app.persist_config();
     Ok(new_device)
 }
@@ -306,13 +307,19 @@ pub fn unpair_device(device_id: String, state: State<'_, SharedAppState>) -> Res
 #[tauri::command]
 pub fn connect_device(device_id: String, state: State<'_, SharedAppState>) -> Result<(), String> {
     let mut app = state.lock().unwrap();
-    if let Some(dev) = app
+    let name_opt = if let Some(dev) = app
         .devices
         .iter_mut()
         .find(|d| d.id == device_id || d.ip_address == device_id)
     {
         dev.is_connected = true;
-        let name = dev.name.clone();
+        Some(dev.name.clone())
+    } else {
+        None
+    };
+
+    if let Some(name) = name_opt {
+        app.is_host = true;
         app.add_log(
             "INFO",
             "friday_network::transport",
@@ -604,6 +611,18 @@ pub fn open_permission_settings() -> Result<(), String> {
 pub fn get_logs(state: State<'_, SharedAppState>) -> Vec<LogEntryDto> {
     let app = state.lock().unwrap();
     app.logs.clone()
+}
+
+#[tauri::command]
+pub fn clear_logs(state: State<'_, SharedAppState>) -> Result<(), String> {
+    let mut app = state.lock().unwrap();
+    app.logs.clear();
+    app.add_log(
+        "INFO",
+        "friday_gui::diagnostics",
+        "Diagnostic logs cleared",
+    );
+    Ok(())
 }
 
 // ── Pairing handshake commands ─────────────────────────────────────────────────

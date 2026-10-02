@@ -3,11 +3,15 @@ import {
   CheckCircle2,
   Copy,
   Cpu,
+  Filter,
   Gauge,
   Layers,
+  MousePointer,
   Play,
   RotateCw,
   Terminal,
+  Trash2,
+  Wifi,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -17,6 +21,7 @@ interface DiagnosticsProps {
   report: DiagnosticReport | null;
   benchmark: BenchmarkReport | null;
   logs: LogEntry[];
+  onClearLogs?: () => void;
   onRunDiagnostics: () => void;
   onRunBenchmark: () => void;
   isLoadingDiag: boolean;
@@ -27,15 +32,16 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
   report,
   benchmark,
   logs,
+  onClearLogs,
   onRunDiagnostics,
   onRunBenchmark,
   isLoadingDiag,
   isLoadingBench,
 }) => {
   const [copied, setCopied] = useState(false);
-  const [showLogTerminal, setShowLogTerminal] = useState(false);
-  const [copiedPairing, setCopiedPairing] = useState(false);
-  const [copiedAll, setCopiedAll] = useState(false);
+  const [showLogTerminal, setShowLogTerminal] = useState(true);
+  const [logFilter, setLogFilter] = useState<"all" | "mouse" | "pairing">("all");
+  const [copiedLogs, setCopiedLogs] = useState(false);
 
 
   const copyDiagnosticReport = () => {
@@ -267,50 +273,124 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
         </div>
       )}
 
-      {/* ── Dedicated Pairing Logs ──────────────────────────────── */}
+      {/* ── Unified Diagnostic & Mouse Movement Logs ─────────────────── */}
       {(() => {
+        const mouseLogs = logs.filter(
+          (l) =>
+            l.target.includes("mouse") ||
+            l.target.includes("ownership") ||
+            l.message.toLowerCase().includes("mouse") ||
+            l.message.toLowerCase().includes("cursor") ||
+            l.message.toLowerCase().includes("dwell") ||
+            l.message.toLowerCase().includes("handoff") ||
+            l.message.toLowerCase().includes("edge")
+        );
+
         const pairingLogs = logs.filter(
           (l) =>
             l.target.includes("pairing") ||
             l.message.toLowerCase().includes("pairing") ||
             l.message.toLowerCase().includes("probe") ||
-            l.message.toLowerCase().includes("pair")
+            l.message.toLowerCase().includes("pair") ||
+            l.message.toLowerCase().includes("connected to") ||
+            l.message.toLowerCase().includes("unpaired")
         );
 
-        const copyPairingLogs = () => {
-          const text = pairingLogs.length === 0
-            ? "(no pairing logs yet)"
-            : pairingLogs
-                .map((l) => `[${l.timestamp}] ${l.level}  ${l.message}`)
-                .join("\n");
-          navigator.clipboard.writeText(
-            `=== FRIDAY PAIRING LOGS ===\n${text}\n===========================`
-          );
-          setCopiedPairing(true);
-          setTimeout(() => setCopiedPairing(false), 2000);
+        const activeLogs =
+          logFilter === "mouse"
+            ? mouseLogs
+            : logFilter === "pairing"
+            ? pairingLogs
+            : logs;
+
+        const copyCurrentLogs = () => {
+          const title =
+            logFilter === "mouse"
+              ? "FRIDAY MOUSE MOVEMENT LOGS"
+              : logFilter === "pairing"
+              ? "FRIDAY PAIRING LOGS"
+              : "FRIDAY ENGINE DIAGNOSTIC LOGS";
+          const text =
+            activeLogs.length === 0
+              ? "(no logs in this filter)"
+              : activeLogs
+                  .map((l) => `[${l.timestamp}] ${l.level}  ${l.target}: ${l.message}`)
+                  .join("\n");
+          navigator.clipboard.writeText(`=== ${title} ===\n${text}\n===========================`);
+          setCopiedLogs(true);
+          setTimeout(() => setCopiedLogs(false), 2000);
         };
 
         return (
-          <div className="card" style={{ gap: "10px" }}>
-            <div className="card-header">
-              <span className="card-title">
-                <Terminal size={16} color="#06b6d4" />
-                Pairing Logs ({pairingLogs.length} entries)
-              </span>
-              <button
-                className="btn btn-sm btn-outline"
-                onClick={copyPairingLogs}
-                title="Copy pairing logs to clipboard"
-              >
-                <Copy size={12} />
-                <span>{copiedPairing ? "Copied!" : "Copy Logs"}</span>
-              </button>
+          <div className="card" style={{ gap: "12px" }}>
+            <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <Terminal size={17} color="#06b6d4" />
+                <span className="card-title" style={{ fontSize: "15px", fontWeight: 700 }}>
+                  Diagnostic & Mouse Logs ({activeLogs.length})
+                </span>
+              </div>
+
+              {/* Filter tabs */}
+              <div style={{ display: "flex", alignItems: "center", gap: "6px", background: "rgba(0,0,0,0.3)", padding: "3px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <button
+                  className={`btn btn-sm ${logFilter === "all" ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setLogFilter("all")}
+                  style={{ fontSize: "11px", padding: "4px 8px" }}
+                >
+                  All Logs ({logs.length})
+                </button>
+                <button
+                  className={`btn btn-sm ${logFilter === "mouse" ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setLogFilter("mouse")}
+                  style={{ fontSize: "11px", padding: "4px 8px", display: "flex", alignItems: "center", gap: "4px" }}
+                >
+                  <MousePointer size={11} />
+                  Mouse ({mouseLogs.length})
+                </button>
+                <button
+                  className={`btn btn-sm ${logFilter === "pairing" ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setLogFilter("pairing")}
+                  style={{ fontSize: "11px", padding: "4px 8px", display: "flex", alignItems: "center", gap: "4px" }}
+                >
+                  <Wifi size={11} />
+                  Pairing ({pairingLogs.length})
+                </button>
+              </div>
+
+              {/* Actions: Copy & Clear */}
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <button
+                  className="btn btn-sm btn-outline"
+                  onClick={copyCurrentLogs}
+                  title="Copy displayed logs to clipboard"
+                  style={{ fontSize: "11px" }}
+                >
+                  <Copy size={12} />
+                  <span>{copiedLogs ? "Copied!" : "Copy"}</span>
+                </button>
+                {onClearLogs && (
+                  <button
+                    className="btn btn-sm btn-outline"
+                    onClick={onClearLogs}
+                    title="Clear all stored logs"
+                    style={{ fontSize: "11px", color: "#f43f5e", borderColor: "rgba(244,63,94,0.3)" }}
+                  >
+                    <Trash2 size={12} />
+                    <span>Clear Logs</span>
+                  </button>
+                )}
+              </div>
             </div>
 
-            {pairingLogs.length === 0 ? (
-              <p style={{ fontSize: "12px", color: "var(--text-muted)", padding: "8px 0" }}>
-                No pairing events yet. Trigger a pairing attempt to see detailed step-by-step logs here.
-              </p>
+            {activeLogs.length === 0 ? (
+              <div style={{ textAlign: "center", padding: "24px 10px", color: "var(--text-muted)", fontSize: "13px" }}>
+                {logFilter === "mouse"
+                  ? "No mouse movement events recorded yet. Move your mouse or touchpad to screen edges to see live routing logs."
+                  : logFilter === "pairing"
+                  ? "No pairing events yet. Connect or pair a machine to see handshake logs."
+                  : "No diagnostic logs recorded yet."}
+              </div>
             ) : (
               <div
                 style={{
@@ -319,96 +399,60 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
                   borderRadius: "var(--radius-sm)",
                   fontFamily: "var(--font-mono)",
                   fontSize: "12px",
-                  maxHeight: "280px",
+                  maxHeight: "360px",
                   overflowY: "auto",
                   display: "flex",
                   flexDirection: "column",
-                  gap: "4px",
+                  gap: "5px",
                   border: "1px solid var(--border-subtle)",
                 }}
               >
-                {pairingLogs.map((log, i) => (
-                  <div key={i} style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
-                    <span style={{ color: "#64748b", flexShrink: 0 }}>[{log.timestamp}]</span>
-                    <span
-                      style={{
-                        color:
-                          log.level === "INFO" ? "#06b6d4"
-                          : log.level === "WARN" ? "#f59e0b"
-                          : "#f43f5e",
-                        fontWeight: 600,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {log.level}
-                    </span>
-                    <span style={{ color: "#f1f5f9", whiteSpace: "pre-wrap" }}>{log.message}</span>
-                  </div>
-                ))}
+                {activeLogs.map((log, i) => {
+                  const isMouse = log.target.includes("mouse") || log.target.includes("ownership");
+                  const isPairing = log.target.includes("pairing") || log.message.toLowerCase().includes("pair");
+
+                  return (
+                    <div key={i} style={{ display: "flex", gap: "8px", alignItems: "flex-start", lineHeight: 1.4 }}>
+                      <span style={{ color: "#64748b", flexShrink: 0 }}>[{log.timestamp}]</span>
+                      <span
+                        style={{
+                          color:
+                            log.level === "INFO" ? "#06b6d4"
+                            : log.level === "WARN" ? "#f59e0b"
+                            : "#f43f5e",
+                          fontWeight: 600,
+                          flexShrink: 0,
+                          minWidth: "40px",
+                        }}
+                      >
+                        {log.level}
+                      </span>
+                      <span
+                        style={{
+                          color: isMouse ? "#38bdf8" : isPairing ? "#10b981" : "#a855f7",
+                          flexShrink: 0,
+                          fontWeight: 500,
+                          fontSize: "11px",
+                          background: isMouse
+                            ? "rgba(56,189,248,0.1)"
+                            : isPairing
+                            ? "rgba(16,185,129,0.1)"
+                            : "rgba(168,85,247,0.1)",
+                          padding: "1px 5px",
+                          borderRadius: "3px",
+                        }}
+                      >
+                        {log.target.replace("friday_core::", "").replace("friday_network::", "")}
+                      </span>
+                      <span style={{ color: "#f1f5f9", wordBreak: "break-word" }}>{log.message}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
         );
       })()}
-
-      {/* Internal Log Viewer (full engine log) */}
-      {showLogTerminal && (
-        <div className="card" style={{ gap: "10px" }}>
-          <div className="card-header">
-            <span className="card-title">
-              <Terminal size={16} color="#06b6d4" />
-              Engine Log Buffer ({logs.length} entries)
-            </span>
-            <button
-              className="btn btn-sm btn-outline"
-              onClick={() => {
-                const text = logs
-                  .map((l) => `[${l.timestamp}] ${l.level}  ${l.target}: ${l.message}`)
-                  .join("\n");
-                navigator.clipboard.writeText(`=== FRIDAY ENGINE LOGS ===\n${text}\n==========================`);
-                setCopiedAll(true);
-                setTimeout(() => setCopiedAll(false), 2000);
-              }}
-              title="Copy all engine logs"
-            >
-              <Copy size={12} />
-              <span>{copiedAll ? "Copied!" : "Copy All"}</span>
-            </button>
-          </div>
-
-          <div
-            style={{
-              background: "#05070a",
-              padding: "14px",
-              borderRadius: "var(--radius-sm)",
-              fontFamily: "var(--font-mono)",
-              fontSize: "12px",
-              maxHeight: "240px",
-              overflowY: "auto",
-              display: "flex",
-              flexDirection: "column",
-              gap: "4px",
-              border: "1px solid var(--border-subtle)",
-            }}
-          >
-            {logs.map((log, i) => (
-              <div key={i} style={{ display: "flex", gap: "8px" }}>
-                <span style={{ color: "#64748b" }}>[{log.timestamp}]</span>
-                <span
-                  style={{
-                    color: log.level === "INFO" ? "#06b6d4" : log.level === "WARN" ? "#f59e0b" : "#f43f5e",
-                    fontWeight: 600,
-                  }}
-                >
-                  {log.level}
-                </span>
-                <span style={{ color: "#94a3b8" }}>{log.target}:</span>
-                <span style={{ color: "#f1f5f9" }}>{log.message}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 };

@@ -20,7 +20,6 @@ interface DevicesProps {
   pendingRequests: PendingPairRequest[];
   activeDeviceId: string;
   isHost?: boolean;
-  onToggleRole?: (isHost: boolean) => void;
   onInitiatePairing: (deviceId: string, pin: string, targetIp?: string) => Promise<boolean>;
   onAddManualDevice: (ip: string, port?: number, name?: string) => void;
   onUnpairDevice: (deviceId: string) => void;
@@ -37,7 +36,6 @@ export const Devices: React.FC<DevicesProps> = ({
   pendingRequests,
   activeDeviceId,
   isHost = true,
-  onToggleRole,
   onInitiatePairing,
   onAddManualDevice,
   onUnpairDevice,
@@ -178,8 +176,8 @@ export const Devices: React.FC<DevicesProps> = ({
             </h2>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
               {isHost
-                ? "Main Host Mode — this machine's physical mouse controls all connected screens across the circular topology."
-                : "Client Screen Mode — receiving remote mouse movements from the main host."}
+                ? "Main Host Mode — this machine's mouse & touchpad control all connected screens across the circular topology."
+                : "Client Screen Mode — receiving remote mouse & trackpad input from the Main Host."}
             </p>
           </div>
 
@@ -188,7 +186,7 @@ export const Devices: React.FC<DevicesProps> = ({
               style={{
                 fontSize: "12px",
                 fontWeight: 700,
-                padding: "4px 10px",
+                padding: "5px 12px",
                 borderRadius: "var(--radius-sm)",
                 background: isHost ? "rgba(6, 182, 212, 0.15)" : "rgba(168, 85, 247, 0.15)",
                 color: isHost ? "#06b6d4" : "#a855f7",
@@ -198,18 +196,8 @@ export const Devices: React.FC<DevicesProps> = ({
                 gap: "6px",
               }}
             >
-              {isHost ? "ROLE: MAIN HOST (CONTROLLER)" : "ROLE: CLIENT (RECEIVER)"}
+              {isHost ? "ROLE: MAIN HOST (CONTROLLER)" : "ROLE: CLIENT SCREEN"}
             </span>
-            {onToggleRole && (
-              <button
-                className="btn btn-sm btn-outline"
-                onClick={() => onToggleRole(!isHost)}
-                title={isHost ? "Switch this machine to Client Receiver mode" : "Switch this machine to Main Host mode"}
-                style={{ fontSize: "11px" }}
-              >
-                {isHost ? "Switch to Client Mode" : "Switch to Host Mode"}
-              </button>
-            )}
           </div>
         </div>
 
