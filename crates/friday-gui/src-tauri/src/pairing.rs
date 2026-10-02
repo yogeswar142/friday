@@ -71,23 +71,19 @@ pub fn remove_pending(pin: &str) {
 /// Quick UDP probe — sends a FRIDAY_PAIR_PROBE and expects FRIDAY_PAIR_PROBE_ACK within 3s.
 /// Returns Ok(()) if reachable, Err(message) with actionable text if not.
 pub fn probe_pairing_port(target_ip: &str) -> Result<(), String> {
-    let reply_socket =
+    let socket =
         UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind probe socket: {}", e))?;
-    reply_socket
-        .set_read_timeout(Some(Duration::from_secs(3)))
-        .ok();
-    let reply_port = reply_socket.local_addr().map(|a| a.port()).unwrap_or(0);
+    socket.set_read_timeout(Some(Duration::from_secs(3))).ok();
+    let local_port = socket.local_addr().map(|a| a.port()).unwrap_or(0);
 
-    let send_socket =
-        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind send socket: {}", e))?;
     let dest = format!("{}:{}", target_ip, PAIR_REQUEST_PORT);
-    let msg = format!("FRIDAY_PAIR_PROBE:{}", reply_port);
-    send_socket
+    let msg = format!("FRIDAY_PAIR_PROBE:{}", local_port);
+    socket
         .send_to(msg.as_bytes(), &dest)
         .map_err(|e| format!("Cannot reach {}:{} — {}", target_ip, PAIR_REQUEST_PORT, e))?;
 
     let mut buf = [0u8; 64];
-    match reply_socket.recv_from(&mut buf) {
+    match socket.recv_from(&mut buf) {
         Ok((len, _)) => {
             let reply = String::from_utf8_lossy(&buf[..len]);
             if reply.starts_with("FRIDAY_PAIR_PROBE_ACK") {
@@ -121,22 +117,18 @@ pub fn send_pairing_request(
     pin: &str,
     state: &SharedAppState,
 ) -> Result<bool, String> {
-    // Bind reply listener on an ephemeral OS-assigned port
-    let reply_socket =
-        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind reply socket: {}", e))?;
-    reply_socket
-        .set_read_timeout(Some(Duration::from_secs(30)))
-        .ok();
+    // Bind single socket on an ephemeral OS-assigned port for both send and receive
+    let socket =
+        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Cannot bind pairing socket: {}", e))?;
+    socket.set_read_timeout(Some(Duration::from_secs(30))).ok();
 
     // Get the actual port the OS assigned
-    let reply_port = reply_socket
+    let reply_port = socket
         .local_addr()
         .map_err(|e| format!("Cannot get local addr: {}", e))?
         .port();
 
     // Send request — include reply_port so remote knows where to send the ACK
-    let send_socket =
-        UdpSocket::bind("0.0.0.0:0").map_err(|e| format!("Send socket bind failed: {}", e))?;
     let dest = format!("{}:{}", target_ip, PAIR_REQUEST_PORT);
     // Format: FRIDAY_PAIR_REQUEST:<pin>:<from_id>:<from_name>:<reply_port>
     let msg = format!(
@@ -144,7 +136,7 @@ pub fn send_pairing_request(
         pin, local_id, local_name, reply_port
     );
 
-    send_socket
+    socket
         .send_to(msg.as_bytes(), &dest)
         .map_err(|e| format!("Failed to send pairing request to {}: {}", dest, e))?;
 
@@ -173,7 +165,7 @@ pub fn send_pairing_request(
 
     // Wait for FRIDAY_PAIR_ACCEPT:<pin> or FRIDAY_PAIR_REJECT:<pin>
     let mut buf = [0u8; 256];
-    match reply_socket.recv_from(&mut buf) {
+    match socket.recv_from(&mut buf) {
         Ok((len, src)) => {
             let reply = String::from_utf8_lossy(&buf[..len]);
             info!("Pairing reply from {}: {}", src, reply);

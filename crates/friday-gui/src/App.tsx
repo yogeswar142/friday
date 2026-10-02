@@ -59,6 +59,8 @@ export const App: React.FC = () => {
       api.getTelemetry().then(setTelemetry).catch(() => {});
       // Poll for incoming pair requests on this machine (from remote FRIDAY nodes)
       api.getPendingPairRequests().then(setPendingRequests).catch(() => {});
+      // Poll logs so diagnostics log view updates in real time
+      api.getLogs().then(setLogs).catch(() => {});
     }, 2000);
 
     return () => clearInterval(interval);
@@ -142,14 +144,15 @@ export const App: React.FC = () => {
     }
   };
 
-  const handleInitiatePairing = async (deviceId: string, pin: string): Promise<boolean> => {
+  const handleInitiatePairing = async (deviceId: string, pin: string, targetIp?: string): Promise<boolean> => {
     try {
-      const accepted = await api.initiatePairing(deviceId, pin);
-      if (accepted) refreshAllData();
+      const accepted = await api.initiatePairing(deviceId, pin, targetIp);
+      await refreshAllData();
       return accepted;
     } catch (e) {
       console.error("Pairing failed:", e);
-      return false;
+      await refreshAllData();
+      throw e;
     }
   };
 

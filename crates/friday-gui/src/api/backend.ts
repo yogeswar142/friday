@@ -341,8 +341,8 @@ export const api = {
   openPermissionSettings: () => invokeTauri<void>("open_permission_settings"),
   getLogs: () => invokeTauri<LogEntry[]>("get_logs"),
   /** Send pairing request to remote device — blocks up to 30s waiting for user accept */
-  initiatePairing: (device_id: string, pin: string) =>
-    invokeTauri<boolean>("initiate_pairing", { device_id, pin }),
+  initiatePairing: (device_id: string, pin: string, target_ip?: string) =>
+    invokeTauri<boolean>("initiate_pairing", { device_id, pin, target_ip }),
   /** Poll for incoming pair requests on this machine (call every 2s) */
   getPendingPairRequests: () =>
     invokeTauri<PendingPairRequest[]>("get_pending_pair_requests"),

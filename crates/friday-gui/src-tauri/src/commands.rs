@@ -535,24 +535,63 @@ pub fn get_logs(state: State<'_, SharedAppState>) -> Vec<LogEntryDto> {
 pub fn initiate_pairing(
     device_id: String,
     pin: String,
+    target_ip: Option<String>,
     state: State<'_, SharedAppState>,
 ) -> Result<bool, String> {
-    let (local_id, local_name, target_ip) = {
+    app_log(
+        &state,
+        "INFO",
+        "friday_network::pairing",
+        &format!(
+            "Initiating pairing: target='{}', hint_ip={:?}, PIN={}",
+            device_id, target_ip, pin
+        ),
+    );
+
+    let (local_id, local_name, resolved_target_ip, device_name) = {
         let app = state.lock().unwrap();
 
-        // Find the device in discovered list
+        // 1. Try to find the device in discovered list by id or by IP
         let dev = app
             .discovered_devices
             .iter()
-            .find(|d| d.id == device_id)
+            .find(|d| d.id == device_id || d.ip_address == device_id)
+            .cloned()
             .or_else(|| {
-                // Also search in paired list (for reconnect scenarios)
-                None
-            })
-            .cloned();
+                // 2. Also search in paired devices list
+                app.devices
+                    .iter()
+                    .find(|d| d.id == device_id || d.ip_address == device_id)
+                    .map(|d| crate::types::DiscoveredDevice {
+                        id: d.id.clone(),
+                        name: d.name.clone(),
+                        os: d.os.clone(),
+                        arch: d.arch.clone(),
+                        ip_address: d.ip_address.clone(),
+                        port: d.port,
+                        is_paired: true,
+                    })
+            });
 
-        let dev = dev
-            .ok_or_else(|| format!("Device {} not found in discovered devices list", device_id))?;
+        let resolved_ip = if let Some(ref d) = dev {
+            d.ip_address.clone()
+        } else if let Some(ref ip) = target_ip {
+            ip.clone()
+        } else if device_id.parse::<std::net::IpAddr>().is_ok() {
+            device_id.clone()
+        } else {
+            let err = format!(
+                "Device '{}' not found in discovered list. Please click 'Scan Subnet' or specify IP address.",
+                device_id
+            );
+            app_log(&state, "WARN", "friday_network::pairing", &err);
+            return Err(err);
+        };
+
+        let resolved_name = dev
+            .as_ref()
+            .map(|d| d.name.clone())
+            .unwrap_or_else(|| format!("Remote ({})", resolved_ip));
 
         let local_id = app.local_device_id.clone();
         let local_name = app
@@ -561,24 +600,15 @@ pub fn initiate_pairing(
             .map(|d| d.name.clone())
             .unwrap_or_else(|| local_id.clone());
 
-        (local_id, local_name, dev.ip_address.clone())
+        (local_id, local_name, resolved_ip, resolved_name)
     };
 
-    app_log(
-        &state,
-        "INFO",
-        "friday_network::pairing",
-        &format!(
-            "Initiating pairing with {} (IP: {}) PIN={}",
-            device_id, target_ip, pin
-        ),
-    );
+    let target_ip = resolved_target_ip;
 
     // Pre-flight: quick 3s probe to confirm FRIDAY is reachable on pairing port.
     // Returns a clear error immediately instead of waiting 30s on timeout.
-    crate::pairing::probe_pairing_port(&target_ip).map_err(|e| {
-        app_log(&state, "WARN", "friday_network::pairing", &e);
-        e
+    crate::pairing::probe_pairing_port(&target_ip).inspect_err(|e| {
+        app_log(&state, "WARN", "friday_network::pairing", e);
     })?;
 
     app_log(
@@ -600,19 +630,20 @@ pub fn initiate_pairing(
     if accepted {
         // Promote discovered → paired device automatically
         let mut app = state.lock().unwrap();
-        if let Some(idx) = app
+        let discovered = app
             .discovered_devices
             .iter()
-            .position(|d| d.id == device_id)
-        {
-            let discovered = app.discovered_devices.remove(idx);
+            .position(|d| d.id == device_id || d.ip_address == target_ip)
+            .map(|idx| app.discovered_devices.remove(idx));
+
+        if let Some(d) = discovered {
             let new_device = crate::types::DeviceInfo {
-                id: discovered.id.clone(),
-                name: discovered.name.clone(),
-                os: discovered.os.clone(),
-                arch: discovered.arch.clone(),
-                ip_address: discovered.ip_address.clone(),
-                port: discovered.port,
+                id: d.id.clone(),
+                name: d.name.clone(),
+                os: d.os.clone(),
+                arch: d.arch.clone(),
+                ip_address: d.ip_address.clone(),
+                port: d.port,
                 is_local: false,
                 is_active: false,
                 is_connected: true,
@@ -625,17 +656,62 @@ pub fn initiate_pairing(
             };
             app.devices.push(new_device.clone());
             app.topology.add_device(friday_core::ScreenLayout {
-                device_id: discovered.id.clone(),
-                name: discovered.name.clone(),
+                device_id: d.id.clone(),
+                name: d.name.clone(),
                 bounds: friday_core::DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
             });
             app.add_log(
                 "INFO",
                 "friday_network::pairing",
-                &format!(
-                    "Device {} paired successfully (PIN confirmed)",
-                    discovered.name
-                ),
+                &format!("Device {} paired successfully (PIN confirmed)", d.name),
+            );
+            app.persist_config();
+        } else if !app
+            .devices
+            .iter()
+            .any(|d| d.ip_address == target_ip || d.id == device_id)
+        {
+            let new_device = crate::types::DeviceInfo {
+                id: device_id.clone(),
+                name: device_name.clone(),
+                os: "Linux".into(),
+                arch: "x86_64".into(),
+                ip_address: target_ip.clone(),
+                port: 48700,
+                is_local: false,
+                is_active: false,
+                is_connected: true,
+                latency_ms: 0.0,
+                capabilities: vec![
+                    "mouse_capture".into(),
+                    "mouse_injection".into(),
+                    "edge_detection".into(),
+                ],
+            };
+            app.devices.push(new_device.clone());
+            app.topology.add_device(friday_core::ScreenLayout {
+                device_id: device_id.clone(),
+                name: device_name.clone(),
+                bounds: friday_core::DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+            });
+            app.add_log(
+                "INFO",
+                "friday_network::pairing",
+                &format!("Device {} paired successfully (PIN confirmed)", device_name),
+            );
+            app.persist_config();
+        } else {
+            if let Some(dev) = app
+                .devices
+                .iter_mut()
+                .find(|d| d.ip_address == target_ip || d.id == device_id)
+            {
+                dev.is_connected = true;
+            }
+            app.add_log(
+                "INFO",
+                "friday_network::pairing",
+                &format!("Device {} paired and connected", device_name),
             );
             app.persist_config();
         }

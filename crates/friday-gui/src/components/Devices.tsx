@@ -19,7 +19,7 @@ interface DevicesProps {
   discovered: DiscoveredDevice[];
   pendingRequests: PendingPairRequest[];
   activeDeviceId: string;
-  onInitiatePairing: (deviceId: string, pin: string) => Promise<boolean>;
+  onInitiatePairing: (deviceId: string, pin: string, targetIp?: string) => Promise<boolean>;
   onAddManualDevice: (ip: string, port?: number, name?: string) => void;
   onUnpairDevice: (deviceId: string) => void;
   onConnectDevice: (deviceId: string) => void;
@@ -66,7 +66,7 @@ export const Devices: React.FC<DevicesProps> = ({
     setPairingResult(null);
     setPairingError(null);
     try {
-      const accepted = await onInitiatePairing(pairingModalDev.id, pairCode);
+      const accepted = await onInitiatePairing(pairingModalDev.id, pairCode, pairingModalDev.ip_address);
       setPairingResult(accepted ? "accepted" : "rejected");
       if (accepted) {
         setTimeout(() => {
@@ -409,10 +409,33 @@ export const Devices: React.FC<DevicesProps> = ({
             />
           </div>
 
-          <button type="submit" className="btn btn-primary" style={{ height: "38px" }}>
-            <Plus size={14} />
-            <span>Connect Device</span>
-          </button>
+          <div style={{ display: "flex", gap: "8px" }}>
+            <button type="submit" className="btn btn-outline" style={{ height: "38px" }}>
+              <Plus size={14} />
+              <span>Direct Connect</span>
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              style={{ height: "38px" }}
+              disabled={!manualIp.trim()}
+              onClick={() => {
+                if (!manualIp.trim()) return;
+                startPairingFlow({
+                  id: manualIp.trim(),
+                  name: manualName.trim() || `Node (${manualIp.trim()})`,
+                  ip_address: manualIp.trim(),
+                  port: parseInt(manualPort) || 48700,
+                  os: "Remote",
+                  arch: "x86_64",
+                  is_paired: false,
+                });
+              }}
+            >
+              <Shield size={14} />
+              <span>Pair with IP</span>
+            </button>
+          </div>
         </form>
       </div>
 

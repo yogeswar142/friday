@@ -269,7 +269,13 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
 
       {/* ── Dedicated Pairing Logs ──────────────────────────────── */}
       {(() => {
-        const pairingLogs = logs.filter((l) => l.target === "friday_network::pairing");
+        const pairingLogs = logs.filter(
+          (l) =>
+            l.target.includes("pairing") ||
+            l.message.toLowerCase().includes("pairing") ||
+            l.message.toLowerCase().includes("probe") ||
+            l.message.toLowerCase().includes("pair")
+        );
 
         const copyPairingLogs = () => {
           const text = pairingLogs.length === 0
