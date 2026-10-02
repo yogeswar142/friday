@@ -5,6 +5,7 @@ pub struct EngineStatus {
     pub state: String, // "running", "stopped", "paused"
     pub active_device_id: String,
     pub local_device_id: String,
+    pub is_host: bool,
     pub connected_count: usize,
     pub network_state: String,
     pub latency_ms: f32,
@@ -50,6 +51,7 @@ pub struct TopologyLinkDto {
 pub struct TopologyDto {
     pub ring: Vec<String>,
     pub active_device: String,
+    pub is_host: bool,
     pub devices: Vec<DeviceInfo>,
     pub links: Vec<TopologyLinkDto>,
 }

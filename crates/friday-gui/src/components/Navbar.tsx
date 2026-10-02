@@ -120,17 +120,16 @@ export const Navbar: React.FC<NavbarProps> = ({
                 borderRadius: "var(--radius-sm)",
                 border: "1px solid var(--border-subtle)",
               }}
-              title="Physical Mouse Source & Active Cursor Owner"
+              title="Role & Cursor Status"
             >
-              <span style={{ color: "var(--text-muted)", display: "flex", alignItems: "center", gap: "4px" }}>
-                <Mouse size={12} color="#06b6d4" />
-                <span>PHYSICAL MOUSE:</span>
-                <strong style={{ color: "var(--text-primary)" }}>{status.local_device_id}</strong>
+              <span style={{ color: status.is_host ? "#06b6d4" : "#a855f7", display: "flex", alignItems: "center", gap: "4px", fontWeight: 700 }}>
+                {status.is_host ? <Mouse size={12} color="#06b6d4" /> : <Laptop size={12} color="#a855f7" />}
+                <span>{status.is_host ? "HOST (CONTROLLER)" : "CLIENT (SCREEN)"}</span>
               </span>
               <span style={{ color: "var(--border-subtle)" }}>|</span>
               <span style={{ color: "var(--accent-emerald)", display: "flex", alignItems: "center", gap: "4px" }}>
                 <Laptop size={12} color="#10b981" />
-                <span>ACTIVE CURSOR:</span>
+                <span>ACTIVE:</span>
                 <strong>{status.active_device_id}</strong>
               </span>
             </div>

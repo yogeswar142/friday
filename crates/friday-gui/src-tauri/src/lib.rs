@@ -70,6 +70,7 @@ pub fn run() {
             commands::initiate_pairing,
             commands::get_pending_pair_requests,
             commands::respond_to_pair_request,
+            commands::set_device_role,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FRIDAY desktop application");

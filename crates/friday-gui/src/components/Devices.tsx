@@ -19,6 +19,8 @@ interface DevicesProps {
   discovered: DiscoveredDevice[];
   pendingRequests: PendingPairRequest[];
   activeDeviceId: string;
+  isHost?: boolean;
+  onToggleRole?: (isHost: boolean) => void;
   onInitiatePairing: (deviceId: string, pin: string, targetIp?: string) => Promise<boolean>;
   onAddManualDevice: (ip: string, port?: number, name?: string) => void;
   onUnpairDevice: (deviceId: string) => void;
@@ -34,6 +36,8 @@ export const Devices: React.FC<DevicesProps> = ({
   discovered,
   pendingRequests,
   activeDeviceId,
+  isHost = true,
+  onToggleRole,
   onInitiatePairing,
   onAddManualDevice,
   onUnpairDevice,
@@ -166,15 +170,46 @@ export const Devices: React.FC<DevicesProps> = ({
 
       {/* Connected Devices Section */}
       <div className="card">
-        <div className="card-header">
+        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
           <div>
             <h2 className="card-title">
               <Laptop size={17} color="#10b981" />
               Connected Devices ({devices.length})
             </h2>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
-              Active nodes participating in the cross-platform peripheral sharing network
+              {isHost
+                ? "Main Host Mode — this machine's physical mouse controls all connected screens across the circular topology."
+                : "Client Screen Mode — receiving remote mouse movements from the main host."}
             </p>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <span
+              style={{
+                fontSize: "12px",
+                fontWeight: 700,
+                padding: "4px 10px",
+                borderRadius: "var(--radius-sm)",
+                background: isHost ? "rgba(6, 182, 212, 0.15)" : "rgba(168, 85, 247, 0.15)",
+                color: isHost ? "#06b6d4" : "#a855f7",
+                border: `1px solid ${isHost ? "rgba(6, 182, 212, 0.4)" : "rgba(168, 85, 247, 0.4)"}`,
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+              }}
+            >
+              {isHost ? "ROLE: MAIN HOST (CONTROLLER)" : "ROLE: CLIENT (RECEIVER)"}
+            </span>
+            {onToggleRole && (
+              <button
+                className="btn btn-sm btn-outline"
+                onClick={() => onToggleRole(!isHost)}
+                title={isHost ? "Switch this machine to Client Receiver mode" : "Switch this machine to Main Host mode"}
+                style={{ fontSize: "11px" }}
+              >
+                {isHost ? "Switch to Client Mode" : "Switch to Host Mode"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -258,7 +293,7 @@ export const Devices: React.FC<DevicesProps> = ({
                   </div>
                   <div>
                     <span style={{ color: "var(--text-muted)" }}>SOURCE: </span>
-                    <span>{d.is_local ? "Physical Mouse (Local)" : "Remote Peer"}</span>
+                    <span>{d.is_local ? (isHost ? "Physical Mouse (Host)" : "Client Screen") : (isHost ? "Client Screen" : "Host Controller")}</span>
                   </div>
                   <div>
                     <span style={{ color: "var(--text-muted)" }}>CAPS: </span>
@@ -268,15 +303,23 @@ export const Devices: React.FC<DevicesProps> = ({
 
                 {/* Actions */}
                 <div style={{ display: "flex", gap: "8px", marginTop: "auto" }}>
-                  {!isActive && (
-                    <button
-                      className="btn btn-sm btn-primary"
-                      onClick={() => onSwitchOwner(d.id)}
-                      style={{ flex: 1 }}
-                    >
-                      <Zap size={12} />
-                      Take Control
-                    </button>
+                  {isHost ? (
+                    !isActive && (
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={() => onSwitchOwner(d.id)}
+                        style={{ flex: 1 }}
+                        title={d.is_local ? "Return mouse directly to Host screen" : `Jump physical mouse directly to ${d.name}`}
+                      >
+                        <Zap size={12} />
+                        Take Control
+                      </button>
+                    )
+                  ) : (
+                    <div style={{ flex: 1, fontSize: "11px", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: "4px", padding: "4px 0" }}>
+                      <Shield size={12} />
+                      <span>{isActive ? "Host mouse is on this screen" : "Client Screen (Managed by Host)"}</span>
+                    </div>
                   )}
 
                   {!d.is_local && (

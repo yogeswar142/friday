@@ -2,6 +2,7 @@ export interface EngineStatus {
   state: "running" | "stopped" | "paused";
   active_device_id: string;
   local_device_id: string;
+  is_host: boolean;
   connected_count: number;
   network_state: string;
   latency_ms: number;
@@ -52,6 +53,7 @@ export interface TopologyLink {
 export interface TopologyDto {
   ring: string[];
   active_device: string;
+  is_host: boolean;
   devices: DeviceInfo[];
   links: TopologyLink[];
 }

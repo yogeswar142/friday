@@ -78,6 +78,7 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
         state: mockEngineRunning ? "running" : "stopped",
         active_device_id: mockActiveDevice,
         local_device_id: "G50",
+        is_host: true,
         connected_count: mockDevices.filter((d) => d.is_connected).length,
         network_state: mockEngineRunning ? "Connected" : "Disconnected",
         latency_ms: 0.82,
@@ -172,6 +173,7 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
       return {
         ring: mockRing,
         active_device: mockActiveDevice,
+        is_host: true,
         devices: mockDevices,
         links,
       } as unknown as T;
@@ -362,4 +364,7 @@ export const api = {
   /** Accept or reject an incoming pair request */
   respondToPairRequest: (pin: string, accept: boolean) =>
     invokeTauri<void>("respond_to_pair_request", { pin, accept }),
+  /** Set device role: true for Host (Controller), false for Client (Receiver) */
+  setDeviceRole: (isHost: boolean) =>
+    invokeTauri<void>("set_device_role", { isHost, is_host: isHost }),
 };

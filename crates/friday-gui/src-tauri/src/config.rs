@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     #[serde(default)]
@@ -11,6 +15,8 @@ pub struct AppConfig {
     pub paired_devices: Vec<DeviceInfo>,
     #[serde(default)]
     pub ring_topology: Vec<String>,
+    #[serde(default = "default_true")]
+    pub is_host: bool,
 }
 
 impl Default for AppConfig {
@@ -19,6 +25,7 @@ impl Default for AppConfig {
             settings: SettingsDto::default(),
             paired_devices: Vec::new(),
             ring_topology: Vec::new(),
+            is_host: true,
         }
     }
 }
@@ -48,6 +55,7 @@ impl ConfigManager {
                         settings,
                         paired_devices: Vec::new(),
                         ring_topology: Vec::new(),
+                        is_host: true,
                     };
                 }
             }

@@ -229,6 +229,15 @@ export const App: React.FC = () => {
     setTheme(newSettings.appearance);
   };
 
+  const handleToggleRole = async (isHost: boolean) => {
+    try {
+      await api.setDeviceRole(isHost);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to switch device role:", e);
+    }
+  };
+
   const handleCloseFirstRun = () => {
     localStorage.setItem("friday_first_run_completed", "true");
     setFirstRunModalOpen(false);
@@ -266,6 +275,8 @@ export const App: React.FC = () => {
             discovered={discovered}
             pendingRequests={pendingRequests}
             activeDeviceId={status?.active_device_id || ""}
+            isHost={status?.is_host ?? true}
+            onToggleRole={handleToggleRole}
             onInitiatePairing={handleInitiatePairing}
             onAddManualDevice={handleManualAddDevice}
             onUnpairDevice={handleUnpairDevice}

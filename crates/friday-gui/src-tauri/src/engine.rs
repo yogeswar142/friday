@@ -129,8 +129,13 @@ unsafe extern "system" fn low_level_mouse_proc(
         }
 
         if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
-            let msg = w_param.0 as u32;
             let info = *(l_param.0 as *const MSLLHOOKSTRUCT);
+            // Ignore injected events (so SendInput events on client are never captured or blocked!)
+            if (info.flags & 1) != 0 {
+                return CallNextHookEx(None, n_code, w_param, l_param);
+            }
+
+            let msg = w_param.0 as u32;
 
             match msg {
                 WM_MOUSEMOVE => {
@@ -414,15 +419,14 @@ fn handle_incoming_control(
                         "INFO",
                         "friday_core::ownership",
                         &format!(
-                            "Control received from {} — cursor placed at ({}, {})",
-                            src, target_x, target_y
+                            "Host mouse entered screen — placed at ({}, {})",
+                            target_x, target_y
                         ),
                     );
-                    app.persist_config();
                 }
             }
             ControlMessage::TakeControl => {
-                // Remote is claiming control
+                // Remote host is claiming control
                 info!("Remote {} claimed TakeControl", src);
                 if let Ok(mut app) = shared_state.lock() {
                     let remote_dev = app
@@ -441,7 +445,35 @@ fn handle_incoming_control(
             }
             ControlMessage::ReleaseAll => {
                 debug!("Received ReleaseAll from {}", src);
-                // Inject mouse release if needed
+                // Release held mouse buttons on client
+                inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
+                    button: MouseButton::Left,
+                    state: ElementState::Released,
+                    timestamp: 0,
+                }));
+                inject_os_event(&InputEvent::Mouse(MouseEvent::Button {
+                    button: MouseButton::Right,
+                    state: ElementState::Released,
+                    timestamp: 0,
+                }));
+                if let Ok(mut app) = shared_state.lock() {
+                    if !app.is_host {
+                        // On Client, cursor is no longer on this display; mark host as active owner
+                        let remote_id = app
+                            .devices
+                            .iter()
+                            .find(|d| !d.is_local)
+                            .map(|d| d.id.clone())
+                            .unwrap_or_default();
+                        if !remote_id.is_empty() {
+                            app.active_device_id = remote_id.clone();
+                            app.topology.set_active_device(&remote_id);
+                            for d in &mut app.devices {
+                                d.is_active = d.id == remote_id;
+                            }
+                        }
+                    }
+                }
             }
             ControlMessage::Ping { seq } => {
                 let pong = ControlMessage::Pong { seq };
@@ -552,7 +584,7 @@ fn run_mouse_router(
     let threshold = 4i32;
 
     while !stop_flag.load(Ordering::Relaxed) {
-        let (is_running, is_paused, local_id, active_id, connected_peers, dwell_ms) = {
+        let (is_running, is_paused, is_host, local_id, active_id, connected_peers, dwell_ms) = {
             let app = shared_state.lock().unwrap();
             let peers: Vec<crate::types::DeviceInfo> = app
                 .devices
@@ -563,6 +595,7 @@ fn run_mouse_router(
             (
                 app.engine_running,
                 app.engine_paused,
+                app.is_host,
                 app.local_device_id.clone(),
                 app.active_device_id.clone(),
                 peers,
@@ -570,12 +603,34 @@ fn run_mouse_router(
             )
         };
 
-        if !is_running || is_paused || connected_peers.is_empty() {
+        // If engine is not running, paused, this machine is a CLIENT (not host), or no peers:
+        // Client machines NEVER run mouse edge routing or capture local mouse!
+        if !is_running || is_paused || !is_host || connected_peers.is_empty() {
             if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
                 IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
             }
             std::thread::sleep(Duration::from_millis(50));
             continue;
+        }
+
+        // On Host: detect if active_id was changed via GUI (e.g. user clicked "Take Control" on Host)
+        if active_id != local_id {
+            if current_target_device_id != active_id || !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+                if let Some(target_dev) = connected_peers.iter().find(|d| d.id == active_id) {
+                    target_ip = target_dev.ip_address.clone();
+                    target_port = target_dev.port;
+                    current_target_device_id = target_dev.id.clone();
+                    remote_x = remote_w / 2.0;
+                    remote_y = remote_h / 2.0;
+                    IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
+                    HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
+                    return_dwell_start = None;
+                }
+            }
+        } else if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) && active_id == local_id {
+            IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+            return_dwell_start = None;
+            current_target_device_id.clear();
         }
 
         let is_controlling = IS_CONTROLLING_REMOTE.load(Ordering::Relaxed);
@@ -887,9 +942,9 @@ fn run_mouse_router(
 
 // ── Public notification helpers ────────────────────────────────────────────────
 
-/// Called when user clicks "Take Control" in the GUI
+/// Called when user clicks "Take Control" in the GUI (Host only)
 pub fn notify_active_device_changed(shared_state: &SharedAppState, new_active_id: &str) {
-    let (is_local, target_addr) = {
+    let (is_local, target_addr, all_remotes) = {
         let app = shared_state.lock().unwrap();
         let is_loc = new_active_id == app.local_device_id;
         let addr = app
@@ -897,28 +952,44 @@ pub fn notify_active_device_changed(shared_state: &SharedAppState, new_active_id
             .iter()
             .find(|d| d.id == new_active_id)
             .map(|d| format!("{}:{}", d.ip_address, d.port));
-        (is_loc, addr)
+        let remotes: Vec<String> = app
+            .devices
+            .iter()
+            .filter(|d| !d.is_local && d.is_connected)
+            .map(|d| format!("{}:{}", d.ip_address, d.port))
+            .collect();
+        (is_loc, addr, remotes)
     };
 
     if is_local {
-        // We took control locally!
+        // Host took control back locally!
         IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
-        // Tell all peers we took control
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
-            let app = shared_state.lock().unwrap();
-            for d in app.devices.iter().filter(|d| !d.is_local && d.is_connected) {
-                let dest = format!("{}:{}", d.ip_address, d.port);
-                if let Ok(bytes) = ControlMessage::TakeControl.encode() {
-                    let packet = NetworkPacket::new_control(bytes);
-                    if let Ok(enc) = packet.encode() {
+            if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
+                let packet = NetworkPacket::new_control(bytes);
+                if let Ok(enc) = packet.encode() {
+                    for dest in all_remotes {
                         let _ = socket.send_to(&enc, &dest);
                     }
                 }
             }
         }
     } else if let Some(dest) = target_addr {
-        // We gave control to a remote device
+        // Host jumped control directly to a remote client screen
+        IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
+        HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
+
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+            // First send ReleaseAll to other client screens
+            if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
+                let packet = NetworkPacket::new_control(bytes);
+                if let Ok(enc) = packet.encode() {
+                    for other_dest in all_remotes.iter().filter(|d| *d != &dest) {
+                        let _ = socket.send_to(&enc, other_dest);
+                    }
+                }
+            }
+            // Send HandoffControl to target client screen
             let handoff = ControlMessage::HandoffControl {
                 entry_x_norm: 0.5,
                 entry_y_norm: 0.5,

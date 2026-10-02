@@ -382,6 +382,7 @@ pub fn get_topology(state: State<'_, SharedAppState>) -> TopologyDto {
     TopologyDto {
         ring: ring.clone(),
         active_device: app.active_device_id.clone(),
+        is_host: app.is_host,
         devices: app.devices.clone(),
         links,
     }
@@ -714,6 +715,8 @@ pub fn initiate_pairing(
     if accepted {
         // Promote discovered → paired device automatically
         let mut app = state.lock().unwrap();
+        // Initiator of pairing is the HOST controller
+        app.is_host = true;
         let discovered = app
             .discovered_devices
             .iter()
@@ -842,6 +845,8 @@ pub fn respond_to_pair_request(
     if accept {
         // Add the initiator device to OUR paired list too (symmetric pairing)
         let mut app = state.lock().unwrap();
+        // Since this machine accepted a pairing request from a host, this machine is a CLIENT screen!
+        app.is_host = false;
         let already_known = app.devices.iter().any(|d| d.ip_address == request.from_ip);
         if !already_known {
             let new_device = crate::types::DeviceInfo {
@@ -871,10 +876,12 @@ pub fn respond_to_pair_request(
                 "INFO",
                 "friday_network::pairing",
                 &format!(
-                    "Accepted pairing from {} — device added to ring",
+                    "Accepted pairing from {} — device added to ring (Client Mode)",
                     request.from_name
                 ),
             );
+            app.persist_config();
+        } else {
             app.persist_config();
         }
     } else {
@@ -891,6 +898,22 @@ pub fn respond_to_pair_request(
         );
     }
 
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_device_role(is_host: bool, state: State<'_, SharedAppState>) -> Result<(), String> {
+    let mut app = state.lock().unwrap();
+    app.is_host = is_host;
+    app.add_log(
+        "INFO",
+        "friday_core::engine",
+        &format!(
+            "Device role switched to: {}",
+            if is_host { "Host (Controller)" } else { "Client (Receiver)" }
+        ),
+    );
+    app.persist_config();
     Ok(())
 }
 

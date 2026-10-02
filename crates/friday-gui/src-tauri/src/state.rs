@@ -10,6 +10,7 @@ pub struct AppState {
     pub engine_paused: bool,
     pub local_device_id: String,
     pub active_device_id: String,
+    pub is_host: bool,
     pub topology: CircularTopology,
     pub devices: Vec<DeviceInfo>,
     pub discovered_devices: Vec<DiscoveredDevice>,
@@ -146,6 +147,7 @@ impl AppState {
             engine_paused: false,
             local_device_id: local_id.clone(),
             active_device_id: local_id,
+            is_host: config.is_host,
             topology: ct,
             devices,
             discovered_devices: Vec::new(),
@@ -173,6 +175,7 @@ impl AppState {
                 .cloned()
                 .collect(),
             ring_topology: self.topology.ring.clone(),
+            is_host: self.is_host,
         };
         let _ = ConfigManager::save_config(&app_cfg);
     }
@@ -200,6 +203,7 @@ impl AppState {
             state: state.to_string(),
             active_device_id: self.active_device_id.clone(),
             local_device_id: self.local_device_id.clone(),
+            is_host: self.is_host,
             connected_count: self.devices.iter().filter(|d| d.is_connected).count(),
             network_state: if self.engine_running {
                 "Connected".into()

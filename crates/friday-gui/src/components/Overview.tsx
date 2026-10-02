@@ -106,14 +106,19 @@ export const Overview: React.FC<OverviewProps> = ({
               <Laptop size={16} color="#10b981" />
               Active Cursor Owner
             </span>
-            <span className="device-badge badge-active">Exclusive</span>
+            <span className="device-badge badge-active">
+              {status?.is_host ? "HOST CONTROLLER" : "CLIENT SCREEN"}
+            </span>
           </div>
           <div className="metric-value">{status?.active_device_id || "None"}</div>
           <div className="metric-sub">
-            Physical Mouse: <strong style={{ color: "var(--text-primary)" }}>{status?.local_device_id}</strong>
-            {status?.active_device_id === status?.local_device_id
-              ? " (Local focus)"
-              : " (Streaming to remote)"}
+            {status?.is_host
+              ? (status?.active_device_id === status?.local_device_id
+                  ? "Physical mouse active locally on Host"
+                  : `Physical mouse controlling remote screen: ${status?.active_device_id}`)
+              : (status?.active_device_id === status?.local_device_id
+                  ? "Host mouse is currently active on this screen"
+                  : "Host mouse is on another screen")}
           </div>
         </div>
 
