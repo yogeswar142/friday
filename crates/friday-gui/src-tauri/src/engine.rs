@@ -339,6 +339,186 @@ fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
+    info!("Starting Linux X11 mouse capture thread");
+    // SAFETY: Open dedicated X display connection for the capture thread
+    let display = unsafe { x11::xlib::XOpenDisplay(std::ptr::null()) };
+    if display.is_null() {
+        warn!("run_linux_hook_thread: Failed to open X display — mouse capture disabled");
+        return;
+    }
+
+    let screen = unsafe { x11::xlib::XDefaultScreen(display) };
+    let root = unsafe { x11::xlib::XRootWindow(display, screen) };
+
+    let (screen_w, screen_h) = get_screen_dimensions();
+    let center_x = screen_w / 2;
+    let center_y = screen_h / 2;
+
+    let mut was_controlling = false;
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        let is_controlling = IS_CONTROLLING_REMOTE.load(Ordering::Relaxed);
+
+        if is_controlling && !was_controlling {
+            // Host just began controlling remote: grab pointer on X11
+            unsafe {
+                // Grab pointer so no clicks/movement leak to local Linux applications
+                let grab_status = x11::xlib::XGrabPointer(
+                    display,
+                    root,
+                    0,
+                    (x11::xlib::PointerMotionMask
+                        | x11::xlib::ButtonPressMask
+                        | x11::xlib::ButtonReleaseMask) as u32,
+                    x11::xlib::GrabModeAsync,
+                    x11::xlib::GrabModeAsync,
+                    0,
+                    0,
+                    x11::xlib::CurrentTime,
+                );
+                if grab_status == x11::xlib::GrabSuccess {
+                    debug!("Linux X11 pointer successfully grabbed for remote control");
+                } else {
+                    warn!("Linux X11 XGrabPointer returned status {}", grab_status);
+                }
+                // Warp pointer to center to allow relative motion deltas
+                x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, center_x, center_y);
+                x11::xlib::XFlush(display);
+            }
+            was_controlling = true;
+        } else if !is_controlling && was_controlling {
+            // Host returned to controlling local machine: ungrab pointer
+            unsafe {
+                x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+                let fx = FREEZE_CURSOR_X.load(Ordering::Relaxed);
+                let fy = FREEZE_CURSOR_Y.load(Ordering::Relaxed);
+                if fx >= 0 && fy >= 0 {
+                    x11::xlib::XWarpPointer(display, 0, root, 0, 0, 0, 0, fx, fy);
+                }
+                x11::xlib::XFlush(display);
+            }
+            was_controlling = false;
+        }
+
+        if is_controlling {
+            // Process X events while pointer is grabbed
+            unsafe {
+                while x11::xlib::XPending(display) > 0 {
+                    let mut event: x11::xlib::XEvent = std::mem::zeroed();
+                    x11::xlib::XNextEvent(display, &mut event);
+
+                    match event.get_type() {
+                        x11::xlib::ButtonPress => {
+                            let btn_num = event.button.button;
+                            if btn_num == 4 {
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::Scroll {
+                                        dx: 0,
+                                        dy: -1,
+                                        timestamp: 0,
+                                    }));
+                                }
+                            } else if btn_num == 5 {
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::Scroll {
+                                        dx: 0,
+                                        dy: 1,
+                                        timestamp: 0,
+                                    }));
+                                }
+                            } else if btn_num == 6 {
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::Scroll {
+                                        dx: -1,
+                                        dy: 0,
+                                        timestamp: 0,
+                                    }));
+                                }
+                            } else if btn_num == 7 {
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::Scroll {
+                                        dx: 1,
+                                        dy: 0,
+                                        timestamp: 0,
+                                    }));
+                                }
+                            } else {
+                                let friday_btn = match btn_num {
+                                    1 => MouseButton::Left,
+                                    2 => MouseButton::Middle,
+                                    3 => MouseButton::Right,
+                                    other => MouseButton::Other(other as u8),
+                                };
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                                        button: friday_btn,
+                                        state: ElementState::Pressed,
+                                        timestamp: 0,
+                                    }));
+                                }
+                            }
+                        }
+                        x11::xlib::ButtonRelease => {
+                            let btn_num = event.button.button;
+                            if btn_num <= 3 || btn_num > 7 {
+                                let friday_btn = match btn_num {
+                                    1 => MouseButton::Left,
+                                    2 => MouseButton::Middle,
+                                    3 => MouseButton::Right,
+                                    other => MouseButton::Other(other as u8),
+                                };
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::Button {
+                                        button: friday_btn,
+                                        state: ElementState::Released,
+                                        timestamp: 0,
+                                    }));
+                                }
+                            }
+                        }
+                        x11::xlib::MotionNotify => {
+                            let motion = event.motion;
+                            let dx = motion.x_root - center_x;
+                            let dy = motion.y_root - center_y;
+
+                            if dx != 0 || dy != 0 {
+                                if let Some(tx) = HOOK_EVENT_TX.get() {
+                                    let _ = tx.send(InputEvent::Mouse(MouseEvent::MoveRel {
+                                        dx: dx.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                        dy: dy.clamp(i16::MIN as i32, i16::MAX as i32) as i16,
+                                        timestamp: 0,
+                                    }));
+                                }
+
+                                // Warp pointer back to center to prepare for next delta
+                                x11::xlib::XWarpPointer(
+                                    display, 0, root, 0, 0, 0, 0, center_x, center_y,
+                                );
+                                x11::xlib::XFlush(display);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        std::thread::sleep(Duration::from_millis(2));
+    }
+
+    // SAFETY: Clean ungrab and close display on shutdown
+    unsafe {
+        if was_controlling {
+            x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+            x11::xlib::XFlush(display);
+        }
+        x11::xlib::XCloseDisplay(display);
+    }
+    info!("Linux X11 mouse capture thread stopped");
+}
+
 // ── Background Engine Service ──────────────────────────────────────────────────
 
 pub fn start_engine_service(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) {
@@ -351,6 +531,15 @@ pub fn start_engine_service(shared_state: SharedAppState, stop_flag: Arc<AtomicB
         let stop_clone = stop_flag.clone();
         std::thread::spawn(move || {
             run_windows_hook_thread(stop_clone);
+        });
+    }
+
+    // 1b. Linux X11 mouse capture hook thread
+    #[cfg(target_os = "linux")]
+    {
+        let stop_clone = stop_flag.clone();
+        std::thread::spawn(move || {
+            run_linux_hook_thread(stop_clone);
         });
     }
 
