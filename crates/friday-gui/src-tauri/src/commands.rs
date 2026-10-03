@@ -1146,3 +1146,45 @@ fn app_log(state: &State<'_, SharedAppState>, level: &str, target: &str, msg: &s
         app.add_log(level, target, msg);
     }
 }
+
+#[tauri::command]
+pub fn get_network_working_report(
+    state: State<'_, SharedAppState>,
+) -> crate::network_report::NetworkWorkingReportDto {
+    let hub = crate::network_report::get_telemetry_hub();
+    let app = state.lock().unwrap_or_else(|e| e.into_inner());
+    let local_role = if app.is_host { "Main Host" } else { "Client" };
+    let local_name = app.local_display_name.clone();
+    let local_id = app.local_device_id.clone();
+    let local_ip = crate::state::detect_local_ip();
+    let local_port = app.settings.peer_port;
+
+    let active_name = app
+        .devices
+        .iter()
+        .find(|d| d.id == app.active_device_id || d.ip_address == app.active_device_id)
+        .map(|d| d.name.replace(" (This Machine)", "").trim().to_string())
+        .unwrap_or_else(|| {
+            if app.active_device_id == app.local_device_id {
+                app.local_display_name.clone()
+            } else {
+                app.active_device_id.clone()
+            }
+        });
+    let active_id = app.active_device_id.clone();
+    let is_controlling = crate::engine::is_controlling_remote();
+
+    let ctx = crate::network_report::ReportContext {
+        local_role,
+        local_device_name: &local_name,
+        local_device_id: &local_id,
+        local_ip: &local_ip,
+        local_port,
+        active_device_name: &active_name,
+        active_device_id: &active_id,
+        is_controlling_remote: is_controlling,
+        peers: &app.devices,
+    };
+
+    hub.build_report(&ctx)
+}

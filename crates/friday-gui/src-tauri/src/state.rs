@@ -297,7 +297,8 @@ impl AppState {
             message: msg.to_string(),
         });
         if self.logs.len() > 1000 {
-            self.logs.remove(0);
+            let excess = self.logs.len() - 1000;
+            self.logs.drain(0..excess);
         }
     }
 }

@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   CheckCircle2,
   Copy,
@@ -16,7 +16,8 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { BenchmarkReport, DiagnosticReport, LogEntry } from "../types";
+import { BenchmarkReport, DiagnosticReport, LogEntry, NetworkWorkingReportDto } from "../types";
+import { backendApi } from "../api/backend";
 
 interface DiagnosticsProps {
   report: DiagnosticReport | null;
@@ -43,6 +44,32 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
   const [showLogTerminal, setShowLogTerminal] = useState(true);
   const [logFilter, setLogFilter] = useState<"all" | "mouse" | "keyboard" | "pairing">("all");
   const [copiedLogs, setCopiedLogs] = useState(false);
+
+  const [netReport, setNetReport] = useState<NetworkWorkingReportDto | null>(null);
+  const [copiedNetReport, setCopiedNetReport] = useState(false);
+  const [showNetTimeline, setShowNetTimeline] = useState(false);
+
+  const fetchNetReport = async () => {
+    try {
+      const res = await backendApi.getNetworkWorkingReport();
+      setNetReport(res);
+    } catch (e) {
+      console.error("Failed to fetch dynamic network report:", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchNetReport();
+    const interval = setInterval(fetchNetReport, 1500);
+    return () => clearInterval(interval);
+  }, []);
+
+  const copyFullNetworkReport = () => {
+    if (!netReport) return;
+    navigator.clipboard.writeText(netReport.formatted_report);
+    setCopiedNetReport(true);
+    setTimeout(() => setCopiedNetReport(false), 2000);
+  };
 
 
   const copyDiagnosticReport = () => {
@@ -123,6 +150,209 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
             <span>{copied ? "Copied Report!" : "Copy Report"}</span>
           </button>
         </div>
+      </div>
+
+      {/* ── Dynamic Network Working Report Card ────────────────────── */}
+      <div
+        style={{
+          background: "linear-gradient(135deg, rgba(59, 130, 246, 0.08) 0%, rgba(18, 21, 28, 1) 100%)",
+          border: "1px solid rgba(59, 130, 246, 0.3)",
+          borderRadius: "var(--radius-md)",
+          padding: "20px 24px",
+          display: "flex",
+          flexDirection: "column",
+          gap: "16px",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <span style={{ fontSize: "15px", fontWeight: 700, color: "var(--accent-blue)", display: "flex", alignItems: "center", gap: "8px" }}>
+              <Wifi size={18} />
+              Dynamic Network Working Report & Telemetry Log
+            </span>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+              Full session dynamic metrics covering packet delivery, WiFi jitter, stall detection, and operational timeline
+            </p>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            {netReport && (
+              <span
+                style={{
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  padding: "4px 10px",
+                  borderRadius: "var(--radius-sm)",
+                  fontWeight: 600,
+                  background: netReport.stall_count === 0 ? "rgba(16, 185, 129, 0.2)" : "rgba(245, 158, 11, 0.2)",
+                  color: netReport.stall_count === 0 ? "var(--accent-emerald)" : "var(--accent-amber)",
+                  border: `1px solid ${netReport.stall_count === 0 ? "rgba(16, 185, 129, 0.4)" : "rgba(245, 158, 11, 0.4)"}`,
+                }}
+              >
+                {netReport.network_health}
+              </span>
+            )}
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={copyFullNetworkReport}
+              disabled={!netReport}
+            >
+              <Copy size={13} />
+              <span>{copiedNetReport ? "Copied Full Report!" : "Copy Full Network Report"}</span>
+            </button>
+          </div>
+        </div>
+
+        {netReport && (
+          <>
+            <div className="grid-4" style={{ marginTop: "4px" }}>
+              <div style={{ background: "var(--bg-card)", padding: "12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>SESSION DURATION</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "17px", fontWeight: 700, color: "var(--text-primary)", marginTop: "4px" }}>
+                  {netReport.session_duration}
+                </div>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>Started {netReport.session_start_time}</div>
+              </div>
+
+              <div style={{ background: "var(--bg-card)", padding: "12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>TOTAL PACKETS (TX / RX)</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "17px", fontWeight: 700, color: "var(--accent-cyan)", marginTop: "4px" }}>
+                  {netReport.total_tx_packets} / {netReport.total_rx_packets}
+                </div>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                  {((netReport.total_tx_bytes + netReport.total_rx_bytes) / 1048576).toFixed(2)} MB transferred
+                </div>
+              </div>
+
+              <div style={{ background: "var(--bg-card)", padding: "12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>ROUND-TRIP LATENCY (RTT)</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "17px", fontWeight: 700, color: "var(--accent-emerald)", marginTop: "4px" }}>
+                  {netReport.latency_ms.toFixed(2)} ms
+                </div>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                  Min: {netReport.min_latency_ms.toFixed(2)} | Max: {netReport.max_latency_ms.toFixed(2)} ms
+                </div>
+              </div>
+
+              <div style={{ background: "var(--bg-card)", padding: "12px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>WIFI / SOCKET STALLS</div>
+                <div style={{ fontFamily: "var(--font-mono)", fontSize: "17px", fontWeight: 700, color: netReport.stall_count === 0 ? "var(--accent-emerald)" : "var(--accent-rose)", marginTop: "4px" }}>
+                  {netReport.stall_count} {netReport.stall_count === 1 ? "stall" : "stalls"}
+                </div>
+                <div style={{ fontSize: "11px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                  {netReport.stall_count > 0 ? `Max stall: ${netReport.max_stall_ms}ms` : "Zero packet delivery gaps"}
+                </div>
+              </div>
+            </div>
+
+            {/* Input Traffic Breakdown Cards */}
+            <div className="grid-2">
+              <div style={{ background: "var(--bg-card)", padding: "14px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--accent-cyan)", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <MousePointer size={14} />
+                  Transmitted Traffic (Host: {netReport.local_device_name})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Mouse Motion Packets</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{netReport.tx_breakdown.mouse_moves}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Mouse Clicks / Scrolls</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{netReport.tx_breakdown.mouse_buttons}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Keyboard Keystrokes</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--accent-emerald)" }}>{netReport.tx_breakdown.keyboard_events}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Control & Heartbeat Pings</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{netReport.tx_breakdown.control_packets}</span>
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ background: "var(--bg-card)", padding: "14px", borderRadius: "var(--radius-sm)", border: "1px solid var(--border-subtle)" }}>
+                <div style={{ fontSize: "12px", fontWeight: 700, color: "var(--accent-emerald)", marginBottom: "8px", display: "flex", alignItems: "center", gap: "6px" }}>
+                  <Keyboard size={14} />
+                  Received Traffic (Client: {netReport.local_device_name})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: "6px", fontSize: "12px" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Mouse Moves Injected</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{netReport.rx_breakdown.mouse_moves}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Clicks / Scrolls Injected</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{netReport.rx_breakdown.mouse_buttons}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Keystrokes Injected</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600, color: "var(--accent-emerald)" }}>{netReport.rx_breakdown.keyboard_events}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ color: "var(--text-muted)" }}>Control Handshakes Injected</span>
+                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 600 }}>{netReport.rx_breakdown.control_packets}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Toggle Timeline */}
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <button
+                className="btn btn-outline btn-sm"
+                onClick={() => setShowNetTimeline(!showNetTimeline)}
+              >
+                <span>{showNetTimeline ? "Hide Event Timeline" : `View Operational Timeline (${netReport.timeline.length} events)`}</span>
+              </button>
+            </div>
+
+            {showNetTimeline && (
+              <div
+                style={{
+                  background: "var(--bg-secondary)",
+                  border: "1px solid var(--border-subtle)",
+                  borderRadius: "var(--radius-sm)",
+                  padding: "10px 14px",
+                  maxHeight: "220px",
+                  overflowY: "auto",
+                  fontFamily: "var(--font-mono)",
+                  fontSize: "11px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "6px",
+                }}
+              >
+                {netReport.timeline.length === 0 ? (
+                  <div style={{ color: "var(--text-muted)" }}>No operational events recorded yet</div>
+                ) : (
+                  netReport.timeline.map((item, idx) => (
+                    <div key={idx} style={{ display: "flex", gap: "10px", alignItems: "baseline" }}>
+                      <span style={{ color: "var(--text-muted)", flexShrink: 0 }}>[{item.timestamp}]</span>
+                      <span
+                        style={{
+                          fontWeight: 700,
+                          flexShrink: 0,
+                          color:
+                            item.level === "WARN" || item.level === "STALL"
+                              ? "var(--accent-amber)"
+                              : item.level === "ERROR"
+                              ? "var(--accent-rose)"
+                              : "var(--accent-cyan)",
+                        }}
+                      >
+                        {item.level}
+                      </span>
+                      <span style={{ color: "var(--text-secondary)", flexShrink: 0 }}>[{item.category}]</span>
+                      <span style={{ color: "var(--text-primary)" }}>{item.message}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* Benchmark Summary Card if run */}

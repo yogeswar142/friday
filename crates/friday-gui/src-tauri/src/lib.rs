@@ -3,6 +3,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod discovery;
 pub mod engine;
+pub mod network_report;
 pub mod pairing;
 pub mod state;
 pub mod types;
@@ -107,6 +108,7 @@ pub fn run() {
             commands::set_host_input_preferences,
             commands::get_connection_status,
             commands::get_network_diagnostics,
+            commands::get_network_working_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FRIDAY desktop application");

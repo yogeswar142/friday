@@ -18,6 +18,10 @@ use friday_network::{NetworkPacket, PacketPayload};
 use crate::state::SharedAppState;
 
 static IS_CONTROLLING_REMOTE: AtomicBool = AtomicBool::new(false);
+
+pub fn is_controlling_remote() -> bool {
+    IS_CONTROLLING_REMOTE.load(Ordering::Relaxed)
+}
 static HOOK_EVENT_TX: OnceLock<std::sync::mpsc::Sender<InputEvent>> = OnceLock::new();
 static LAST_HOOK_X: AtomicI32 = AtomicI32::new(0);
 static LAST_HOOK_Y: AtomicI32 = AtomicI32::new(0);
@@ -1271,8 +1275,6 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
 
     let mut buf = [0u8; 1024];
     let mut last_second = Instant::now();
-    let mut packets_this_sec = 0u64;
-    let mut bytes_this_sec = 0u64;
     let mut client_last_move_log = Instant::now();
     let mut client_move_count = 0u32;
     let mut is_receiver_client = false;
@@ -1282,9 +1284,7 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
     while !stop_flag.load(Ordering::Relaxed) {
         match socket.recv_from(&mut buf) {
             Ok((len, src)) => {
-                packets_this_sec += 1;
-                bytes_this_sec += len as u64;
-
+                let hub = crate::network_report::get_telemetry_hub();
                 if let Ok(packet) = NetworkPacket::decode(&buf[..len]) {
                     match packet.payload {
                         PacketPayload::Input(event) => {
@@ -1303,6 +1303,7 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                     InputEvent::Mouse(MouseEvent::Button {
                                         button, state, ..
                                     }) => {
+                                        hub.record_rx(len, "mouse_button", is_receiver_client);
                                         match (button, state) {
                                             (MouseButton::Left, ElementState::Pressed) => {
                                                 CLIENT_HELD_LEFT.store(true, Ordering::SeqCst)
@@ -1330,12 +1331,14 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                         );
                                     }
                                     InputEvent::Mouse(MouseEvent::Scroll { dx, dy, .. }) => {
+                                        hub.record_rx(len, "mouse_button", is_receiver_client);
                                         debug!(
                                             "Client injected scroll (dx: {}, dy: {}) from Host ({})",
                                             dx, dy, src
                                         );
                                     }
                                     InputEvent::Mouse(MouseEvent::MoveRel { .. }) => {
+                                        hub.record_rx(len, "mouse_move", is_receiver_client);
                                         client_move_count += 1;
                                         if client_last_move_log.elapsed()
                                             >= Duration::from_millis(1000)
@@ -1351,30 +1354,26 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                         }
                                     }
                                     InputEvent::Keyboard(kb) => {
+                                        hub.record_rx(len, "keyboard", is_receiver_client);
                                         debug!(
                                             "Client active: injected key {:?} {:?} from Host ({})",
                                             kb.key, kb.state, src
                                         );
-                                        if let Ok(mut app) = shared_state.lock() {
-                                            app.add_log(
-                                                "INFO",
-                                                "friday_core::keyboard",
-                                                &format!(
-                                                    "Client active: injected key {:?} ({:?}) from Host ({})",
-                                                    kb.key, kb.state, src
-                                                ),
-                                            );
-                                        }
                                     }
-                                    _ => {}
+                                    _ => {
+                                        hub.record_rx(len, "other", is_receiver_client);
+                                    }
                                 }
                                 inject_os_event(&event);
                             }
                         }
                         PacketPayload::Control(bytes) => {
+                            hub.record_rx(len, "control", is_receiver_client);
                             handle_incoming_control(bytes, src, &shared_state, &socket);
                         }
-                        _ => {}
+                        _ => {
+                            hub.record_rx(len, "other", is_receiver_client);
+                        }
                     }
                 }
             }
@@ -1385,12 +1384,16 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
 
         // Update telemetry rates every second
         if last_second.elapsed() >= Duration::from_secs(1) {
+            let hub = crate::network_report::get_telemetry_hub();
+            hub.tick_rates();
             if let Ok(mut app) = shared_state.lock() {
-                app.telemetry.packets_per_sec = packets_this_sec as u32;
-                app.telemetry.bytes_per_sec = bytes_this_sec as u32;
+                app.telemetry.packets_per_sec = hub.current_rx_pps.load(Ordering::Relaxed)
+                    + hub.current_tx_pps.load(Ordering::Relaxed);
+                app.telemetry.bytes_per_sec = (hub.current_rx_kbps.load(Ordering::Relaxed)
+                    + hub.current_tx_kbps.load(Ordering::Relaxed))
+                    * 1024;
+                app.telemetry.latency_ms = (hub.rtt_us.load(Ordering::Relaxed) as f32) / 1000.0;
             }
-            packets_this_sec = 0;
-            bytes_this_sec = 0;
             last_second = Instant::now();
         }
 
@@ -1531,11 +1534,14 @@ fn handle_incoming_control(
                     let packet = NetworkPacket::new_control(pong_bytes);
                     if let Ok(enc) = packet.encode() {
                         let _ = socket.send_to(&enc, src);
+                        let hub = crate::network_report::get_telemetry_hub();
+                        hub.record_tx(enc.len(), "control");
                     }
                 }
             }
-            ControlMessage::Pong { seq: _ } => {
-                // Heartbeat reply received
+            ControlMessage::Pong { seq } => {
+                let hub = crate::network_report::get_telemetry_hub();
+                hub.record_pong(seq);
             }
             ControlMessage::Hello {
                 device_name,
@@ -1691,25 +1697,49 @@ fn run_mouse_router(
     let mut held_inputs = HeldInputState::new();
     let mut last_heartbeat_ping = Instant::now();
 
+    let mut last_config_poll = Instant::now() - Duration::from_secs(1);
+    let mut is_running = true;
+    let mut is_paused = false;
+    let mut is_host = false;
+    let mut local_id = String::new();
+    let mut active_id = String::new();
+    let mut connected_peers: Vec<crate::types::DeviceInfo> = Vec::new();
+    let mut dwell_ms = 500u64;
+    let mut host_share_mouse = true;
+    let mut host_share_keyboard = true;
+    let mut target_share_mouse = true;
+    let mut target_share_keyboard = true;
+
     while !stop_flag.load(Ordering::Relaxed) {
-        let (is_running, is_paused, is_host, local_id, active_id, connected_peers, dwell_ms) = {
-            let app = shared_state.lock().unwrap();
-            let peers: Vec<crate::types::DeviceInfo> = app
-                .devices
-                .iter()
-                .filter(|d| !d.is_local && d.is_connected)
-                .cloned()
-                .collect();
-            (
-                app.engine_running,
-                app.engine_paused,
-                app.is_host,
-                app.local_device_id.clone(),
-                app.active_device_id.clone(),
-                peers,
-                app.settings.edge_dwell_ms.max(100),
-            )
-        };
+        if last_config_poll.elapsed() >= Duration::from_millis(50) {
+            last_config_poll = Instant::now();
+            if let Ok(app) = shared_state.lock() {
+                is_running = app.engine_running;
+                is_paused = app.engine_paused;
+                is_host = app.is_host;
+                local_id = app.local_device_id.clone();
+                active_id = app.active_device_id.clone();
+                dwell_ms = app.settings.edge_dwell_ms.max(100);
+                connected_peers = app
+                    .devices
+                    .iter()
+                    .filter(|d| !d.is_local && d.is_connected)
+                    .cloned()
+                    .collect();
+                if let Some(host_dev) = app.devices.iter().find(|d| d.is_local || d.id == local_id)
+                {
+                    host_share_mouse = host_dev.share_mouse;
+                    host_share_keyboard = host_dev.share_keyboard;
+                }
+                if let Some(tgt_dev) = connected_peers
+                    .iter()
+                    .find(|d| d.id == current_target_device_id)
+                {
+                    target_share_mouse = tgt_dev.share_mouse;
+                    target_share_keyboard = tgt_dev.share_keyboard;
+                }
+            }
+        }
 
         // If engine is not running, paused, this machine is a CLIENT (not host), or no peers:
         // Client machines NEVER run mouse edge routing or capture local mouse!
@@ -1933,23 +1963,6 @@ fn run_mouse_router(
         }
         // ── Case 2: Physical mouse is captured locally, driving active remote device ──
         else if is_controlling {
-            let (host_share_mouse, host_share_keyboard, _host_share_clipboard) = {
-                let app = shared_state.lock().unwrap();
-                app.devices
-                    .iter()
-                    .find(|d| d.is_local || d.id == app.local_device_id)
-                    .map(|d| (d.share_mouse, d.share_keyboard, d.share_clipboard))
-                    .unwrap_or((true, true, true))
-            };
-
-            let (target_share_mouse, target_share_keyboard) = {
-                connected_peers
-                    .iter()
-                    .find(|d| d.id == current_target_device_id)
-                    .map(|d| (d.share_mouse, d.share_keyboard))
-                    .unwrap_or((true, true))
-            };
-
             let allow_mouse = host_share_mouse && target_share_mouse;
             let allow_keyboard = host_share_keyboard && target_share_keyboard;
 
@@ -1959,10 +1972,14 @@ fn run_mouse_router(
             // Heartbeat Keepalive: ping target every 500ms so receiver never drops out during inactivity
             if last_heartbeat_ping.elapsed() >= Duration::from_millis(500) {
                 last_heartbeat_ping = Instant::now();
-                let ping = ControlMessage::Ping { seq };
+                let now_32 =
+                    (crate::network_report::NetworkTelemetryHub::now_micros() & 0xFFFFFFFF) as u32;
+                let ping = ControlMessage::Ping { seq: now_32 };
                 if let Ok(bytes) = ping.encode() {
                     let packet = NetworkPacket::new_control(bytes);
                     if let Ok(enc) = packet.encode() {
+                        let hub = crate::network_report::get_telemetry_hub();
+                        hub.record_tx(enc.len(), "control");
                         if let Some(addr) = target_addr {
                             let _ = send_socket.send_to(&enc, addr);
                         }
@@ -1993,33 +2010,9 @@ fn run_mouse_router(
                             // If keyboard is disabled on active target, drop with NO fallback
                             // and ensure any held keys are cleared from tracking
                             held_inputs.record_key(k.key.clone(), ElementState::Released);
-                            if let Ok(mut app) = shared_state.lock() {
-                                app.add_log(
-                                    "WARN",
-                                    "friday_core::keyboard",
-                                    &format!(
-                                        "Host dropped key {:?} ({:?}) — keyboard sharing disabled (host={}, target={})",
-                                        k.key, k.state, host_share_keyboard, target_share_keyboard
-                                    ),
-                                );
-                            }
                             false
                         } else {
                             held_inputs.record_key(k.key.clone(), k.state);
-                            debug!(
-                                "Host forwarded key {:?} {:?} to {}",
-                                k.key, k.state, current_target_device_id
-                            );
-                            if let Ok(mut app) = shared_state.lock() {
-                                app.add_log(
-                                    "INFO",
-                                    "friday_core::keyboard",
-                                    &format!(
-                                        "Host forwarded key {:?} ({:?}) to {}",
-                                        k.key, k.state, current_target_device_id
-                                    ),
-                                );
-                            }
                             true
                         }
                     }
@@ -2342,6 +2335,28 @@ fn run_mouse_router(
                 if should_forward {
                     let packet = NetworkPacket::new_input(evt, seq);
                     if let Ok(enc) = packet.encode() {
+                        let hub = crate::network_report::get_telemetry_hub();
+                        match &packet.payload {
+                            PacketPayload::Input(InputEvent::Mouse(MouseEvent::MoveRel {
+                                ..
+                            })) => {
+                                hub.record_tx(enc.len(), "mouse_move");
+                            }
+                            PacketPayload::Input(InputEvent::Mouse(MouseEvent::Button {
+                                ..
+                            }))
+                            | PacketPayload::Input(InputEvent::Mouse(MouseEvent::Scroll {
+                                ..
+                            })) => {
+                                hub.record_tx(enc.len(), "mouse_button");
+                            }
+                            PacketPayload::Input(InputEvent::Keyboard(_)) => {
+                                hub.record_tx(enc.len(), "keyboard");
+                            }
+                            _ => {
+                                hub.record_tx(enc.len(), "control");
+                            }
+                        }
                         if let Some(addr) = target_addr {
                             let _ = send_socket.send_to(&enc, addr);
                         } else {

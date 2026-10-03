@@ -178,3 +178,55 @@ export interface LogEntry {
 }
 
 export type TabType = "overview" | "devices" | "topology" | "diagnostics" | "settings";
+
+export interface NetworkPacketBreakdown {
+  mouse_moves: number;
+  mouse_buttons: number;
+  keyboard_events: number;
+  control_packets: number;
+  clipboard_packets: number;
+}
+
+export interface TimelineEventDto {
+  timestamp: string;
+  level: string;
+  category: string;
+  message: string;
+}
+
+export interface NetworkWorkingReportDto {
+  session_duration: string;
+  session_start_time: string;
+  local_role: string;
+  local_device_name: string;
+  local_device_id: string;
+  local_ip: string;
+  local_port: number;
+  active_device_name: string;
+  active_device_id: string;
+  is_controlling_remote: boolean;
+  connected_peers_count: number;
+  peers_summary: string[];
+  total_tx_packets: number;
+  total_tx_bytes: number;
+  total_rx_packets: number;
+  total_rx_bytes: number;
+  current_tx_pps: number;
+  current_rx_pps: number;
+  current_tx_kbps: number;
+  current_rx_kbps: number;
+  tx_breakdown: NetworkPacketBreakdown;
+  rx_breakdown: NetworkPacketBreakdown;
+  latency_ms: number;
+  min_latency_ms: number;
+  max_latency_ms: number;
+  avg_latency_ms: number;
+  jitter_ms: number;
+  max_jitter_ms: number;
+  stall_count: number;
+  last_stall_ms: number;
+  max_stall_ms: number;
+  network_health: string;
+  timeline: TimelineEventDto[];
+  formatted_report: string;
+}

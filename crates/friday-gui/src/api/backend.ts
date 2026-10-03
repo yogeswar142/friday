@@ -7,6 +7,7 @@ import {
   LocalDeviceDto,
   LogEntry,
   NetworkDiagnosticsDto,
+  NetworkWorkingReportDto,
   PendingPairRequest,
   PlatformCapabilities,
   PlatformPermissions,
@@ -232,6 +233,75 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
           { name: "Network Latency & Jitter", passed: true, detail: "0.82 ms roundtrip latency, 0.0% packet loss" },
           { name: "Platform Display Server", passed: true, detail: "Connected to X11" },
         ],
+      } as unknown as T;
+
+    case "get_network_working_report":
+      return {
+        session_duration: "00:18:42",
+        session_start_time: "18:25:00 UTC",
+        local_role: "Main Host",
+        local_device_name: "Lenovo G50",
+        local_device_id: "host-g50",
+        local_ip: "192.168.1.10",
+        local_port: 48700,
+        active_device_name: "Lenovo Yoga",
+        active_device_id: "client-yoga",
+        is_controlling_remote: true,
+        connected_peers_count: 1,
+        peers_summary: ["Lenovo Yoga (192.168.1.15:48700) - Connected [Active: true]"],
+        total_tx_packets: 14250,
+        total_tx_bytes: 855000,
+        total_rx_packets: 1240,
+        total_rx_bytes: 74400,
+        current_tx_pps: 120,
+        current_rx_pps: 2,
+        current_tx_kbps: 7.2,
+        current_rx_kbps: 0.2,
+        tx_breakdown: {
+          mouse_moves: 13800,
+          mouse_buttons: 42,
+          keyboard_events: 310,
+          control_packets: 98,
+          clipboard_packets: 0,
+        },
+        rx_breakdown: {
+          mouse_moves: 0,
+          mouse_buttons: 0,
+          keyboard_events: 0,
+          control_packets: 1240,
+          clipboard_packets: 0,
+        },
+        latency_ms: 0.85,
+        min_latency_ms: 0.62,
+        max_latency_ms: 2.14,
+        avg_latency_ms: 0.88,
+        jitter_ms: 0.24,
+        max_jitter_ms: 1.12,
+        stall_count: 0,
+        last_stall_ms: 0,
+        max_stall_ms: 0,
+        network_health: "Optimal (Sub-5ms, Zero Stalls)",
+        timeline: [
+          {
+            timestamp: "18:25:00.120",
+            level: "INFO",
+            category: "session::start",
+            message: "FRIDAY engine started on Lenovo G50 (192.168.1.10:48700)",
+          },
+          {
+            timestamp: "18:25:04.530",
+            level: "INFO",
+            category: "network::peer",
+            message: "Peer Lenovo Yoga connected at 192.168.1.15:48700",
+          },
+          {
+            timestamp: "18:25:12.800",
+            level: "INFO",
+            category: "ownership::handoff",
+            message: "Cursor crossed Right edge -> Active ownership transferred to Lenovo Yoga",
+          },
+        ],
+        formatted_report: "=== FRIDAY REAL-TIME NETWORK & INPUT WORKING REPORT ===\nAll systems operational.",
       } as unknown as T;
 
     case "run_benchmark":
@@ -512,4 +582,9 @@ export const api = {
       shareClipboard,
       share_clipboard: shareClipboard,
     }),
+  /** Query dynamic network working report covering live metrics and session timeline */
+  getNetworkWorkingReport: () =>
+    invokeTauri<NetworkWorkingReportDto>("get_network_working_report"),
 };
+
+export const backendApi = api;
