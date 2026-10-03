@@ -179,7 +179,8 @@ pub fn set_local_clipboard_text(text: &str) -> bool {
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    mouse_event, GetAsyncKeyState, MOUSEEVENTF_MOVE, VK_ESCAPE,
+    keybd_event, mouse_event, GetAsyncKeyState, MapVirtualKeyW, MAP_VIRTUAL_KEY_TYPE,
+    MOUSEEVENTF_MOVE, VK_ESCAPE,
 };
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -300,6 +301,26 @@ pub fn inject_os_event(event: &InputEvent) {
             let new_x = (((*x_norm as f32) / 65535.0) * (screen_w - 1) as f32).round() as i32;
             let new_y = (((*y_norm as f32) / 65535.0) * (screen_h - 1) as f32).round() as i32;
             set_local_cursor_pos(new_x.clamp(0, screen_w - 1), new_y.clamp(0, screen_h - 1));
+        }
+        InputEvent::Keyboard(kb) => {
+            #[cfg(target_os = "windows")]
+            {
+                let (vk, flags) =
+                    friday_agent::platform::windows::keycode_to_vk_flags(&kb.key, kb.state);
+                let scan = unsafe { MapVirtualKeyW(vk.0 as u32, MAP_VIRTUAL_KEY_TYPE(0)) as u8 };
+                // Direct keybd_event driver injection: bypasses UIPI and delivers keystroke to foreground window
+                unsafe {
+                    keybd_event(vk.0 as u8, scan, flags, FRIDAY_INJECTED_MAGIC);
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                let _ = friday_agent::platform::linux::inject_event(event);
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            {
+                let _ = kb;
+            }
         }
         other => {
             #[cfg(target_os = "windows")]
@@ -1188,6 +1209,22 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                             client_last_move_log = Instant::now();
                                         }
                                     }
+                                    InputEvent::Keyboard(kb) => {
+                                        debug!(
+                                            "Client active: injected key {:?} {:?} from Host ({})",
+                                            kb.key, kb.state, src
+                                        );
+                                        if let Ok(mut app) = shared_state.lock() {
+                                            app.add_log(
+                                                "INFO",
+                                                "friday_core::keyboard",
+                                                &format!(
+                                                    "Client active: injected key {:?} ({:?}) from Host ({})",
+                                                    kb.key, kb.state, src
+                                                ),
+                                            );
+                                        }
+                                    }
                                     _ => {}
                                 }
                                 inject_os_event(&event);
@@ -1815,6 +1852,16 @@ fn run_mouse_router(
                             // If keyboard is disabled on active target, drop with NO fallback
                             // and ensure any held keys are cleared from tracking
                             held_inputs.record_key(k.key.clone(), ElementState::Released);
+                            if let Ok(mut app) = shared_state.lock() {
+                                app.add_log(
+                                    "WARN",
+                                    "friday_core::keyboard",
+                                    &format!(
+                                        "Host dropped key {:?} ({:?}) — keyboard sharing disabled (host={}, target={})",
+                                        k.key, k.state, host_share_keyboard, target_share_keyboard
+                                    ),
+                                );
+                            }
                             false
                         } else {
                             held_inputs.record_key(k.key.clone(), k.state);
@@ -1822,6 +1869,16 @@ fn run_mouse_router(
                                 "Host forwarded key {:?} {:?} to {}",
                                 k.key, k.state, current_target_device_id
                             );
+                            if let Ok(mut app) = shared_state.lock() {
+                                app.add_log(
+                                    "INFO",
+                                    "friday_core::keyboard",
+                                    &format!(
+                                        "Host forwarded key {:?} ({:?}) to {}",
+                                        k.key, k.state, current_target_device_id
+                                    ),
+                                );
+                            }
                             true
                         }
                     }

@@ -101,6 +101,8 @@ impl AppState {
             capabilities: vec![
                 "mouse_capture".into(),
                 "mouse_injection".into(),
+                "keyboard_capture".into(),
+                "keyboard_injection".into(),
                 "edge_detection".into(),
                 "clipboard".into(),
             ],
@@ -118,6 +120,12 @@ impl AppState {
             if peer.id != local_id && !devices.iter().any(|d| d.id == peer.id) {
                 peer.is_local = false;
                 peer.is_active = false;
+                if !peer.capabilities.iter().any(|c| c == "keyboard_injection") {
+                    peer.capabilities.push("keyboard_injection".into());
+                }
+                if !peer.capabilities.iter().any(|c| c == "keyboard_capture") {
+                    peer.capabilities.push("keyboard_capture".into());
+                }
                 devices.push(peer);
             }
         }
@@ -140,6 +148,8 @@ impl AppState {
                     capabilities: vec![
                         "mouse_capture".into(),
                         "mouse_injection".into(),
+                        "keyboard_capture".into(),
+                        "keyboard_injection".into(),
                         "edge_detection".into(),
                         "clipboard".into(),
                     ],

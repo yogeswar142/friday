@@ -675,12 +675,14 @@ export const Devices: React.FC<DevicesProps> = ({
                     }}
                   >
                     <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                      <span style={{ color: "var(--accent-emerald)", fontWeight: 500 }}>Mouse ✓</span>
-                      <span style={{ color: d.capabilities.includes("keyboard_injection") ? "var(--accent-emerald)" : "var(--text-muted)" }}>
-                        Keyboard {d.capabilities.includes("keyboard_injection") ? "✓" : "○"}
+                      <span style={{ color: (d.capabilities.includes("mouse_injection") || (d.share_mouse ?? true)) ? "var(--accent-emerald)" : "var(--text-muted)", fontWeight: 500 }}>
+                        Mouse {(d.capabilities.includes("mouse_injection") || (d.share_mouse ?? true)) ? "✓" : "○"}
                       </span>
-                      <span style={{ color: d.capabilities.includes("clipboard") ? "var(--accent-emerald)" : "var(--text-muted)" }}>
-                        Clipboard {d.capabilities.includes("clipboard") ? "✓" : "○"}
+                      <span style={{ color: (d.capabilities.includes("keyboard_injection") || (d.share_keyboard ?? true)) ? "var(--accent-emerald)" : "var(--text-muted)", fontWeight: 500 }}>
+                        Keyboard {(d.capabilities.includes("keyboard_injection") || (d.share_keyboard ?? true)) ? "✓" : "○"}
+                      </span>
+                      <span style={{ color: (d.capabilities.includes("clipboard") || (d.share_clipboard ?? true)) ? "var(--accent-emerald)" : "var(--text-muted)", fontWeight: 500 }}>
+                        Clipboard {(d.capabilities.includes("clipboard") || (d.share_clipboard ?? true)) ? "✓" : "○"}
                       </span>
                     </div>
 

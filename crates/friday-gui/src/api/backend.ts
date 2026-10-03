@@ -50,7 +50,7 @@ let mockDevices: DeviceInfo[] = [
     is_active: true,
     is_connected: true,
     latency_ms: 0.0,
-    capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
+    capabilities: ["mouse_capture", "mouse_injection", "keyboard_capture", "keyboard_injection", "edge_detection", "clipboard"],
   },
 ];
 
@@ -138,7 +138,7 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
           is_active: false,
           is_connected: true,
           latency_ms: 0.95,
-          capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
+          capabilities: ["mouse_capture", "mouse_injection", "keyboard_capture", "keyboard_injection", "edge_detection", "clipboard"],
         };
         mockDevices.push(newDev);
         mockRing.push(devId);
@@ -293,7 +293,7 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
         is_active: false,
         is_connected: true,
         latency_ms: 0.85,
-        capabilities: ["mouse_capture", "mouse_injection", "edge_detection"],
+        capabilities: ["mouse_capture", "mouse_injection", "keyboard_capture", "keyboard_injection", "edge_detection", "clipboard"],
       };
       mockDevices.push(newDev);
       if (!mockRing.includes(id)) {

@@ -5,6 +5,7 @@ import {
   Cpu,
   Filter,
   Gauge,
+  Keyboard,
   Layers,
   MousePointer,
   Play,
@@ -40,7 +41,7 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
 }) => {
   const [copied, setCopied] = useState(false);
   const [showLogTerminal, setShowLogTerminal] = useState(true);
-  const [logFilter, setLogFilter] = useState<"all" | "mouse" | "pairing">("all");
+  const [logFilter, setLogFilter] = useState<"all" | "mouse" | "keyboard" | "pairing">("all");
   const [copiedLogs, setCopiedLogs] = useState(false);
 
 
@@ -296,9 +297,19 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
             l.message.toLowerCase().includes("unpaired")
         );
 
+        const keyboardLogs = logs.filter(
+          (l) =>
+            l.target.includes("keyboard") ||
+            l.message.toLowerCase().includes("keyboard") ||
+            l.message.toLowerCase().includes("key ") ||
+            l.message.toLowerCase().includes("injected key")
+        );
+
         const activeLogs =
           logFilter === "mouse"
             ? mouseLogs
+            : logFilter === "keyboard"
+            ? keyboardLogs
             : logFilter === "pairing"
             ? pairingLogs
             : logs;
@@ -307,6 +318,8 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
           const title =
             logFilter === "mouse"
               ? "FRIDAY MOUSE MOVEMENT LOGS"
+              : logFilter === "keyboard"
+              ? "FRIDAY KEYBOARD EVENT LOGS"
               : logFilter === "pairing"
               ? "FRIDAY PAIRING LOGS"
               : "FRIDAY ENGINE DIAGNOSTIC LOGS";
@@ -327,7 +340,7 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <Terminal size={17} color="#06b6d4" />
                 <span className="card-title" style={{ fontSize: "15px", fontWeight: 700 }}>
-                  Diagnostic & Mouse Logs ({activeLogs.length})
+                  Diagnostic & Input Logs ({activeLogs.length})
                 </span>
               </div>
 
@@ -347,6 +360,14 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
                 >
                   <MousePointer size={11} />
                   Mouse ({mouseLogs.length})
+                </button>
+                <button
+                  className={`btn btn-sm ${logFilter === "keyboard" ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setLogFilter("keyboard")}
+                  style={{ fontSize: "11px", padding: "4px 8px", display: "flex", alignItems: "center", gap: "4px" }}
+                >
+                  <Keyboard size={11} />
+                  Keyboard ({keyboardLogs.length})
                 </button>
                 <button
                   className={`btn btn-sm ${logFilter === "pairing" ? "btn-primary" : "btn-ghost"}`}
@@ -387,6 +408,8 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
               <div style={{ textAlign: "center", padding: "24px 10px", color: "var(--text-muted)", fontSize: "13px" }}>
                 {logFilter === "mouse"
                   ? "No mouse movement events recorded yet. Move your mouse or touchpad to screen edges to see live routing logs."
+                  : logFilter === "keyboard"
+                  ? "No keyboard events recorded yet. Type on your physical keyboard while controlling a remote machine to see live keystroke routing and injection logs."
                   : logFilter === "pairing"
                   ? "No pairing events yet. Connect or pair a machine to see handshake logs."
                   : "No diagnostic logs recorded yet."}
@@ -409,6 +432,7 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
               >
                 {activeLogs.map((log, i) => {
                   const isMouse = log.target.includes("mouse") || log.target.includes("ownership");
+                  const isKeyboard = log.target.includes("keyboard") || log.message.toLowerCase().includes("key");
                   const isPairing = log.target.includes("pairing") || log.message.toLowerCase().includes("pair");
 
                   return (
@@ -429,12 +453,14 @@ export const Diagnostics: React.FC<DiagnosticsProps> = ({
                       </span>
                       <span
                         style={{
-                          color: isMouse ? "#38bdf8" : isPairing ? "#10b981" : "#a855f7",
+                          color: isMouse ? "#38bdf8" : isKeyboard ? "#f59e0b" : isPairing ? "#10b981" : "#a855f7",
                           flexShrink: 0,
                           fontWeight: 500,
                           fontSize: "11px",
                           background: isMouse
                             ? "rgba(56,189,248,0.1)"
+                            : isKeyboard
+                            ? "rgba(245,158,11,0.1)"
                             : isPairing
                             ? "rgba(16,185,129,0.1)"
                             : "rgba(168,85,247,0.1)",

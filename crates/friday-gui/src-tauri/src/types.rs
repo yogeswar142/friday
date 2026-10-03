@@ -78,6 +78,8 @@ impl DeviceInfo {
             capabilities: vec![
                 "mouse_capture".into(),
                 "mouse_injection".into(),
+                "keyboard_capture".into(),
+                "keyboard_injection".into(),
                 "edge_detection".into(),
                 "clipboard".into(),
             ],
@@ -134,7 +136,10 @@ impl DiscoveredDevice {
             capabilities: vec![
                 "mouse_capture".into(),
                 "mouse_injection".into(),
+                "keyboard_capture".into(),
+                "keyboard_injection".into(),
                 "edge_detection".into(),
+                "clipboard".into(),
             ],
         }
     }
