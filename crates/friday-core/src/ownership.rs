@@ -1,10 +1,31 @@
 use crate::{
     coordinates::NormalizedPoint,
-    events::{InputEvent, MouseEvent},
+    events::{InputEvent, KeyboardEvent, MouseEvent},
     state::{CursorMemory, HeldInputState},
     topology::{CircularTopology, Edge, ScreenTopology, TransferEvent},
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+/// Per-device input capability flags.
+/// Absence of an entry is treated as fully enabled (both mouse + keyboard ON).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DevicePermissions {
+    /// When false, mouse events are NOT routed to this device.
+    pub mouse_enabled: bool,
+    /// When false, keyboard events are NOT routed to this device.
+    pub keyboard_enabled: bool,
+}
+
+impl DevicePermissions {
+    /// All input types enabled (default for any new device).
+    pub fn full() -> Self {
+        Self {
+            mouse_enabled: true,
+            keyboard_enabled: true,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DeviceOwnershipState {
@@ -45,6 +66,10 @@ pub enum RoutingDecision {
 /// - Inactive devices receive ZERO input.
 /// - No duplicate or mirrored inputs.
 /// - Seamless Circular N-Device Mouse Routing across the entire ring of devices.
+///
+/// Per-device mouse/keyboard permissions are enforced at routing time:
+/// if a device has `keyboard_enabled = false`, keyboard events routed to it
+/// are silently dropped (they go nowhere — there is NO automatic fallback).
 #[derive(Debug, Clone)]
 pub struct ExclusiveOwnershipRouter {
     pub local_device_id: String,
@@ -54,6 +79,8 @@ pub struct ExclusiveOwnershipRouter {
     pub cursor_memory: CursorMemory,
     pub held_input: HeldInputState,
     pub remote_cursor_px: (f32, f32),
+    /// Per-device input capability flags. Missing entry → full permissions.
+    pub device_permissions: HashMap<String, DevicePermissions>,
 }
 
 impl ExclusiveOwnershipRouter {
@@ -69,8 +96,23 @@ impl ExclusiveOwnershipRouter {
             cursor_memory: CursorMemory::new(),
             held_input: HeldInputState::new(),
             remote_cursor_px: (0.0, 0.0),
+            device_permissions: HashMap::new(),
         }
     }
+
+    /// Configure per-device permissions. Call once per known device at session setup.
+    pub fn set_device_permissions(&mut self, device_id: impl Into<String>, perms: DevicePermissions) {
+        self.device_permissions.insert(device_id.into(), perms);
+    }
+
+    /// Returns the permissions for a device (defaults to full if not set).
+    pub fn get_device_permissions(&self, device_id: &str) -> DevicePermissions {
+        self.device_permissions
+            .get(device_id)
+            .cloned()
+            .unwrap_or_else(DevicePermissions::full)
+    }
+
 
     pub fn from_screen_topology(
         local_device_id: impl Into<String>,
@@ -111,9 +153,12 @@ impl ExclusiveOwnershipRouter {
     ) -> Vec<RoutingDecision> {
         let mut decisions = Vec::new();
 
-        // Track held buttons for safety
+        // Track held buttons and keys for safety
         if let InputEvent::Mouse(MouseEvent::Button { button, state, .. }) = &event {
             self.held_input.record_mouse_button(*button, *state);
+        }
+        if let InputEvent::Keyboard(kb) = &event {
+            self.held_input.record_key(kb.key.clone(), kb.state);
         }
 
         if self.is_local_active() {
@@ -342,12 +387,45 @@ impl ExclusiveOwnershipRouter {
 
         decisions
     }
+
+    /// Route a physical keyboard event according to active_owner and per-device permissions.
+    ///
+    /// Rules:
+    ///   - Physical keyboard is always on the Main Host (G50). This method is called on G50 only.
+    ///   - `active_device_id` determines who receives the key.
+    ///   - If the active device has `keyboard_enabled = false`, the event is **dropped** (nowhere).
+    ///     There is NO automatic fallback to another device.
+    ///   - If local is active, the key goes `Local`.
+    ///   - If a remote device is active, the key goes `Remote { target_device }`.
+    ///
+    /// Note: keyboard events do NOT trigger ownership transfers. Only mouse edge-crossings do.
+    pub fn route_keyboard(&mut self, event: KeyboardEvent) -> RoutingDecision {
+        // Always track held keys so safety-release works correctly
+        self.held_input.record_key(event.key.clone(), event.state);
+
+        let active = &self.active_device_id;
+        let perms = self.get_device_permissions(active);
+
+        if !perms.keyboard_enabled {
+            // Keyboard disabled for this device — drop, no fallback
+            return RoutingDecision::Drop;
+        }
+
+        if self.is_local_active() {
+            RoutingDecision::Local(InputEvent::Keyboard(event))
+        } else {
+            RoutingDecision::Remote {
+                target_device: active.clone(),
+                event: InputEvent::Keyboard(event),
+            }
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DisplayBounds, ElementState, MouseButton, ScreenLayout};
+    use crate::{DisplayBounds, ElementState, KeyCode, KeyboardEvent, MouseButton, ScreenLayout};
 
     fn create_test_setup() -> ExclusiveOwnershipRouter {
         let mut topology = ScreenTopology::new();
@@ -1108,5 +1186,371 @@ mod tests {
             RoutingDecision::Remote { target_device, .. } => assert_eq!(target_device, "C"),
             _ => panic!("Expected remote decision for C"),
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // VERIFICATION TESTS — Req-2 through Req-6
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── REQ-2: Keyboard follows active_owner ─────────────────────────────────
+
+    /// REQ-2a: While G50 is active, keyboard events route Local (not to any remote device).
+    #[test]
+    fn test_v2a_keyboard_follows_active_owner_local() {
+        let mut router = create_test_setup();
+        assert!(router.is_local_active());
+
+        let key_evt = KeyboardEvent {
+            key: KeyCode::A,
+            state: ElementState::Pressed,
+            timestamp: 200,
+        };
+        let decision = router.route_keyboard(key_evt.clone());
+        assert_eq!(
+            decision,
+            RoutingDecision::Local(InputEvent::Keyboard(key_evt)),
+            "Keyboard must go Local when G50 is active"
+        );
+    }
+
+    /// REQ-2b: While Yoga is active, keyboard events route Remote to Yoga.
+    #[test]
+    fn test_v2b_keyboard_follows_active_owner_remote() {
+        let mut router = create_test_setup();
+        // Transfer ownership to Yoga
+        router.active_device_id = "Yoga".into();
+        router.remote_cursor_px = (640.0, 400.0);
+
+        let key_evt = KeyboardEvent {
+            key: KeyCode::Enter,
+            state: ElementState::Pressed,
+            timestamp: 201,
+        };
+        let decision = router.route_keyboard(key_evt.clone());
+        assert_eq!(
+            decision,
+            RoutingDecision::Remote {
+                target_device: "Yoga".into(),
+                event: InputEvent::Keyboard(key_evt),
+            },
+            "Keyboard must route to Yoga when Yoga is active"
+        );
+    }
+
+    /// REQ-2c: Keyboard events never go to inactive devices.
+    #[test]
+    fn test_v2c_keyboard_never_goes_to_inactive_device() {
+        let mut router = create_test_setup();
+        // G50 is active; Yoga is inactive. No keyboard event should target Yoga.
+        let decision = router.route_keyboard(KeyboardEvent {
+            key: KeyCode::Space,
+            state: ElementState::Pressed,
+            timestamp: 202,
+        });
+        assert!(
+            !matches!(decision, RoutingDecision::Remote { ref target_device, .. } if target_device == "Yoga"),
+            "Keyboard must never reach Yoga while G50 is active"
+        );
+    }
+
+    // ── REQ-3: Per-device permissions ────────────────────────────────────────
+
+    fn create_two_device_setup() -> ExclusiveOwnershipRouter {
+        let ct = CircularTopology::from_ring(vec![
+            ScreenLayout {
+                device_id: "A".into(),
+                name: "Local (G50)".into(),
+                bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, true),
+            },
+            ScreenLayout {
+                device_id: "B".into(),
+                name: "Remote B".into(),
+                bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+            },
+        ]);
+        ExclusiveOwnershipRouter::new("A", ct)
+    }
+
+    /// REQ-3a: When device B has keyboard OFF and B is active, keyboard goes nowhere (Drop).
+    ///         No automatic fallback to device A.
+    #[test]
+    fn test_v3a_keyboard_disabled_on_active_device_drops_with_no_fallback() {
+        let mut router = create_two_device_setup();
+        // Device B: mouse ON, keyboard OFF
+        router.set_device_permissions(
+            "B",
+            DevicePermissions {
+                mouse_enabled: true,
+                keyboard_enabled: false,
+            },
+        );
+        // B becomes active
+        router.active_device_id = "B".into();
+        router.remote_cursor_px = (960.0, 540.0);
+
+        let key_evt = KeyboardEvent {
+            key: KeyCode::A,
+            state: ElementState::Pressed,
+            timestamp: 300,
+        };
+        let decision = router.route_keyboard(key_evt);
+        assert_eq!(
+            decision,
+            RoutingDecision::Drop,
+            "Keyboard must be dropped when active device has keyboard_enabled=false; no fallback allowed"
+        );
+    }
+
+    /// REQ-3b: When device B has keyboard OFF and B is active, mouse still routes to B.
+    #[test]
+    fn test_v3b_mouse_still_routes_when_keyboard_disabled() {
+        let mut router = create_two_device_setup();
+        router.set_device_permissions(
+            "B",
+            DevicePermissions {
+                mouse_enabled: true,
+                keyboard_enabled: false,
+            },
+        );
+        router.active_device_id = "B".into();
+        router.remote_cursor_px = (960.0, 540.0);
+
+        let move_evt = InputEvent::Mouse(MouseEvent::MoveRel {
+            dx: 5,
+            dy: 5,
+            timestamp: 301,
+        });
+        let decisions = router.route_input(move_evt.clone(), None);
+        assert_eq!(decisions.len(), 1);
+        assert_eq!(
+            decisions[0],
+            RoutingDecision::Remote {
+                target_device: "B".into(),
+                event: move_evt,
+            },
+            "Mouse must still reach B even when B's keyboard is disabled"
+        );
+    }
+
+    /// REQ-3c: When A becomes active again (A has both ON), keyboard routes Local again.
+    #[test]
+    fn test_v3c_keyboard_resumes_on_return_to_local() {
+        let mut router = create_two_device_setup();
+        // A: full permissions (default)
+        // B: keyboard OFF
+        router.set_device_permissions(
+            "B",
+            DevicePermissions {
+                mouse_enabled: true,
+                keyboard_enabled: false,
+            },
+        );
+
+        // Simulate B active → keyboard drop
+        router.active_device_id = "B".into();
+        router.remote_cursor_px = (960.0, 540.0);
+        let drop = router.route_keyboard(KeyboardEvent {
+            key: KeyCode::Z,
+            state: ElementState::Pressed,
+            timestamp: 302,
+        });
+        assert_eq!(drop, RoutingDecision::Drop);
+
+        // A becomes active again
+        router.active_device_id = "A".into();
+        let key_evt = KeyboardEvent {
+            key: KeyCode::Z,
+            state: ElementState::Released,
+            timestamp: 303,
+        };
+        let decision = router.route_keyboard(key_evt.clone());
+        assert_eq!(
+            decision,
+            RoutingDecision::Local(InputEvent::Keyboard(key_evt)),
+            "Keyboard must resume routing Local once A is active again"
+        );
+    }
+
+    // ── REQ-4: Remote-to-remote (G50 → Yoga → another device) ───────────────
+
+    /// REQ-4: G50 is always the physical source. When ownership is on a third device C
+    ///        (reached via G50→B→C), keyboard still originates from G50 and follows active_owner.
+    #[test]
+    fn test_v4_remote_to_remote_keyboard_sourced_from_g50() {
+        let ct = CircularTopology::from_ring(vec![
+            ScreenLayout {
+                device_id: "G50".into(),
+                name: "G50 (local)".into(),
+                bounds: DisplayBounds::new(0, 0, 1366, 768, 1.0, true),
+            },
+            ScreenLayout {
+                device_id: "Yoga".into(),
+                name: "Yoga (remote 1)".into(),
+                bounds: DisplayBounds::new(0, 0, 1280, 800, 1.0, false),
+            },
+            ScreenLayout {
+                device_id: "C".into(),
+                name: "Another device".into(),
+                bounds: DisplayBounds::new(0, 0, 1920, 1080, 1.0, false),
+            },
+        ]);
+        let mut router = ExclusiveOwnershipRouter::new("G50", ct);
+
+        // Ownership has progressed to C (G50 → Yoga → C)
+        router.active_device_id = "C".into();
+        router.remote_cursor_px = (960.0, 540.0);
+
+        // Physical keyboard is on G50; call route_keyboard on G50's router
+        let key_evt = KeyboardEvent {
+            key: KeyCode::B,
+            state: ElementState::Pressed,
+            timestamp: 400,
+        };
+        let decision = router.route_keyboard(key_evt.clone());
+
+        // Keyboard must go to C (the active device) — NOT to Yoga, NOT local
+        assert_eq!(
+            decision,
+            RoutingDecision::Remote {
+                target_device: "C".into(),
+                event: InputEvent::Keyboard(key_evt),
+            },
+            "Keyboard must target the active device C, sourced from G50's router"
+        );
+    }
+
+    // ── REQ-5: Held-input safety on handoff / disconnect / escape ────────────
+
+    /// REQ-5a: Held Shift + Ctrl + Alt + regular key are all released on edge handoff.
+    #[test]
+    fn test_v5a_held_keys_released_on_edge_handoff() {
+        let mut router = create_test_setup();
+
+        // Hold modifier keys and a regular key via route_keyboard
+        for key in [
+            KeyCode::LeftShift,
+            KeyCode::LeftControl,
+            KeyCode::LeftAlt,
+            KeyCode::A,
+        ] {
+            router.held_input.record_key(key, ElementState::Pressed);
+        }
+        // Hold left mouse button
+        router.held_input.record_mouse_button(MouseButton::Left, ElementState::Pressed);
+
+        assert_eq!(router.held_input.held_keys.len(), 4);
+        assert_eq!(router.held_input.held_mouse_buttons.len(), 1);
+
+        // Trigger edge crossing → G50 → Yoga
+        let decisions = router.route_input(
+            InputEvent::Mouse(MouseEvent::MoveRel {
+                dx: 10,
+                dy: 0,
+                timestamp: 500,
+            }),
+            Some((1365, 384)),
+        );
+
+        // Ownership must have transferred
+        assert_eq!(router.active_device_id(), "Yoga");
+
+        // All held inputs must be cleared after handoff releases
+        assert!(
+            router.held_input.held_mouse_buttons.is_empty(),
+            "Mouse buttons must be released after handoff"
+        );
+        assert!(
+            router.held_input.held_keys.is_empty(),
+            "Held keys must be released after handoff"
+        );
+
+        // Safety-release events must appear in decisions
+        let has_btn_release = decisions.iter().any(|d| {
+            matches!(
+                d,
+                RoutingDecision::Local(InputEvent::Mouse(MouseEvent::Button {
+                    state: ElementState::Released,
+                    ..
+                }))
+            )
+        });
+        assert!(has_btn_release, "Button release must be in handoff decisions");
+    }
+
+    /// REQ-5b: Held keys are all released on emergency escape / disconnect.
+    #[test]
+    fn test_v5b_held_inputs_released_on_emergency_escape() {
+        let mut router = create_test_setup();
+        router.active_device_id = "Yoga".into();
+
+        // Hold several keys and a mouse button
+        for key in [KeyCode::LeftShift, KeyCode::LeftControl, KeyCode::Z] {
+            router.held_input.record_key(key, ElementState::Pressed);
+        }
+        router.held_input.record_mouse_button(MouseButton::Right, ElementState::Pressed);
+
+        let decisions = router.force_restore_local_ownership(999);
+
+        // Must be back on local
+        assert_eq!(router.active_device_id(), "G50");
+        assert!(router.held_input.held_mouse_buttons.is_empty(), "No stuck buttons after escape");
+        assert!(router.held_input.held_keys.is_empty(), "No stuck keys after escape");
+
+        // Releases must be in both Remote (Yoga) and Local (G50) decisions
+        let has_remote_release = decisions.iter().any(|d| matches!(d, RoutingDecision::Remote { .. }));
+        let has_local_release = decisions.iter().any(|d| matches!(d, RoutingDecision::Local(_)));
+        assert!(has_remote_release, "Remote releases sent to Yoga");
+        assert!(has_local_release, "Local releases sent to G50");
+    }
+
+    // ── REQ-6: Emergency Escape (Esc key) ────────────────────────────────────
+
+    /// REQ-6: Escape is NOT silently suppressed in normal routing. It follows active_owner
+    ///        like any other key. The emergency escape mechanism is `force_restore_local_ownership`,
+    ///        which is triggered at the application level (e.g., hotkey combo), NOT by detecting
+    ///        Escape in `route_keyboard`. This test documents and verifies this design intent.
+    #[test]
+    fn test_v6_escape_routes_normally_not_suppressed() {
+        let mut router = create_test_setup();
+
+        // CASE 1: G50 active — Escape routes Local (delivered to local OS normally)
+        let esc_local = KeyboardEvent {
+            key: KeyCode::Escape,
+            state: ElementState::Pressed,
+            timestamp: 600,
+        };
+        let decision_local = router.route_keyboard(esc_local.clone());
+        assert_eq!(
+            decision_local,
+            RoutingDecision::Local(InputEvent::Keyboard(esc_local)),
+            "Escape must route Local when G50 is active — it is NOT a suppression trigger"
+        );
+
+        // CASE 2: Yoga active — Escape routes to Yoga (not dropped, not intercepted)
+        router.active_device_id = "Yoga".into();
+        router.remote_cursor_px = (640.0, 400.0);
+        let esc_remote = KeyboardEvent {
+            key: KeyCode::Escape,
+            state: ElementState::Pressed,
+            timestamp: 601,
+        };
+        let decision_remote = router.route_keyboard(esc_remote.clone());
+        assert_eq!(
+            decision_remote,
+            RoutingDecision::Remote {
+                target_device: "Yoga".into(),
+                event: InputEvent::Keyboard(esc_remote),
+            },
+            "Escape must route to Yoga when Yoga is active — no accidental suppression"
+        );
+
+        // CASE 3: force_restore_local_ownership IS the real emergency escape mechanism
+        //         It releases all held inputs and returns control to G50, regardless of Escape.
+        let releases = router.force_restore_local_ownership(602);
+        assert_eq!(router.active_device_id(), "G50");
+        assert!(
+            releases.iter().any(|d| matches!(d, RoutingDecision::Transfer(_))),
+            "Emergency escape (force_restore) must emit a Transfer back to G50"
+        );
     }
 }

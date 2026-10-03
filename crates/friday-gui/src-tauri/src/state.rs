@@ -105,6 +105,8 @@ impl AppState {
             ],
             connection_state: "Connected".into(),
             trust_state: "Trusted".into(),
+            share_mouse: true,
+            share_keyboard: true,
         };
 
         let mut devices = vec![local_device];
@@ -140,6 +142,8 @@ impl AppState {
                     ],
                     connection_state: "Connected".into(),
                     trust_state: "Trusted".into(),
+                    share_mouse: true,
+                    share_keyboard: true,
                 });
             }
         }
@@ -232,11 +236,25 @@ impl AppState {
         let summary = if self.topology.ring.is_empty() {
             "No devices configured".to_string()
         } else {
-            format!(
-                "{} → {}",
-                self.topology.ring.join(" → "),
-                self.topology.ring[0]
-            )
+            let names: Vec<String> = self
+                .topology
+                .ring
+                .iter()
+                .map(|id| {
+                    if let Some(dev) = self
+                        .devices
+                        .iter()
+                        .find(|d| &d.id == id || &d.ip_address == id)
+                    {
+                        dev.name.replace(" (This Machine)", "").trim().to_string()
+                    } else if id == &self.local_device_id {
+                        self.local_display_name.clone()
+                    } else {
+                        id.clone()
+                    }
+                })
+                .collect();
+            format!("{} → {}", names.join(" → "), names[0])
         };
 
         EngineStatus {

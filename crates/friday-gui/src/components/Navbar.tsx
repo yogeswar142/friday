@@ -41,10 +41,10 @@ export const Navbar: React.FC<NavbarProps> = ({
   const isRunning = status?.state === "running";
   const isPaused = status?.state === "paused";
 
-  const activeDev = devices?.find((d) => d.id === status?.active_device_id);
+  const activeDev = devices?.find((d) => d.id === status?.active_device_id || d.ip_address === status?.active_device_id);
   const activeDisplayName =
-    activeDev?.name ||
-    (localDevice && status?.active_device_id === localDevice.device_id
+    (activeDev?.name ? activeDev.name.replace(/ \(This Machine\)$/, "") : undefined) ||
+    (localDevice && (status?.active_device_id === localDevice.device_id || status?.active_device_id === localDevice.hostname)
       ? localDevice.display_name
       : (status?.active_device_id ? "Active Device" : "None"));
 

@@ -13,12 +13,11 @@ pub const DISCOVERY_PORT: u16 = 48701;
 /// Background responder that listens for discovery pings and announces this node
 pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>) {
     thread::spawn(move || {
-        let (local_id, local_name, os, arch, port, local_ip) = {
+        let (local_id, os, arch, port, local_ip) = {
             let app = state.lock().unwrap();
             let (os, arch) = detect_os_info();
             (
                 app.local_device_id.clone(),
-                format!("{} ({})", app.local_device_id, os),
                 os,
                 arch,
                 app.settings.peer_port,
@@ -47,10 +46,15 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
         let _ = socket.set_broadcast(true);
         let _ = socket.set_read_timeout(Some(Duration::from_millis(500)));
 
+        let initial_name = {
+            let app = state.lock().unwrap();
+            app.local_display_name.clone()
+        };
+
         // Broadcast initial presence announcement to local subnet
         let announce_msg = format!(
             "FRIDAY_NODE_ANNOUNCE:{}:{}:{}:{}:{}",
-            local_id, local_name, os, arch, port
+            local_id, initial_name, os, arch, port
         );
         broadcast_discovery_packet(&socket, announce_msg.as_bytes(), &local_ip, DISCOVERY_PORT);
 
@@ -65,9 +69,13 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
         while !stop_flag.load(Ordering::Relaxed) {
             // Periodic broadcast announce every 8 seconds
             if last_heartbeat.elapsed() > Duration::from_secs(8) {
+                let current_name = {
+                    let app = state.lock().unwrap();
+                    app.local_display_name.clone()
+                };
                 let msg = format!(
                     "FRIDAY_NODE_ANNOUNCE:{}:{}:{}:{}:{}",
-                    local_id, local_name, os, arch, port
+                    local_id, current_name, os, arch, port
                 );
                 broadcast_discovery_packet(&socket, msg.as_bytes(), &local_ip, DISCOVERY_PORT);
                 last_heartbeat = Instant::now();
@@ -80,9 +88,13 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
                     if msg.starts_with("FRIDAY_DISCOVERY_PING:") {
                         let requester_id = msg.trim_start_matches("FRIDAY_DISCOVERY_PING:").trim();
                         if requester_id != local_id {
+                            let current_name = {
+                                let app = state.lock().unwrap();
+                                app.local_display_name.clone()
+                            };
                             let reply = format!(
                                 "FRIDAY_NODE:{}:{}:{}:{}:{}",
-                                local_id, local_name, os, arch, port
+                                local_id, current_name, os, arch, port
                             );
                             let _ = socket.send_to(reply.as_bytes(), src);
                         }
@@ -97,6 +109,16 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
                             let peer_ip = src.ip().to_string();
 
                             let mut app = state.lock().unwrap();
+                            // If device is already paired, update its display name from latest announcement
+                            if let Some(dev) = app
+                                .devices
+                                .iter_mut()
+                                .find(|d| d.id == peer_id || d.ip_address == peer_ip)
+                            {
+                                if !peer_name.is_empty() && !dev.is_local {
+                                    dev.name = peer_name.clone();
+                                }
+                            }
                             let already_paired = app
                                 .devices
                                 .iter()
@@ -109,6 +131,12 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
                                     peer_id, peer_name, peer_os, peer_arch, peer_ip, peer_port,
                                     false,
                                 ));
+                            } else if let Some(disc) =
+                                app.discovered_devices.iter_mut().find(|d| d.id == peer_id)
+                            {
+                                if !peer_name.is_empty() {
+                                    disc.name = peer_name;
+                                }
                             }
                         }
                     }

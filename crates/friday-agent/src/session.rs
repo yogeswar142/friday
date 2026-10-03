@@ -31,7 +31,7 @@ use crate::{
 };
 
 /// How long without a packet before considering connection dead
-const HEARTBEAT_TIMEOUT_MS: u64 = 3000;
+const HEARTBEAT_TIMEOUT_MS: u64 = 6000;
 const HEARTBEAT_INTERVAL_MS: u64 = 500;
 
 /// Session state: controls where input goes

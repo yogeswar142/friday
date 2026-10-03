@@ -472,9 +472,15 @@ pub fn run_diagnostics(state: State<'_, SharedAppState>) -> DiagnosticReportDto 
     let active_name = app
         .devices
         .iter()
-        .find(|d| d.id == app.active_device_id)
-        .map(|d| d.name.clone())
-        .unwrap_or_else(|| app.active_device_id.clone());
+        .find(|d| d.id == app.active_device_id || d.ip_address == app.active_device_id)
+        .map(|d| d.name.replace(" (This Machine)", "").trim().to_string())
+        .unwrap_or_else(|| {
+            if app.active_device_id == app.local_device_id {
+                app.local_display_name.clone()
+            } else {
+                app.active_device_id.clone()
+            }
+        });
     let ring_names: Vec<String> = app
         .topology
         .ring
@@ -482,9 +488,15 @@ pub fn run_diagnostics(state: State<'_, SharedAppState>) -> DiagnosticReportDto 
         .map(|id| {
             app.devices
                 .iter()
-                .find(|d| d.id == *id)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| id.clone())
+                .find(|d| d.id == *id || d.ip_address == *id)
+                .map(|d| d.name.replace(" (This Machine)", "").trim().to_string())
+                .unwrap_or_else(|| {
+                    if *id == app.local_device_id {
+                        app.local_display_name.clone()
+                    } else {
+                        id.clone()
+                    }
+                })
         })
         .collect();
     run_system_diagnostics(
@@ -696,11 +708,7 @@ pub fn initiate_pairing(
             .unwrap_or_else(|| format!("Remote ({})", resolved_ip));
 
         let local_id = app.local_device_id.clone();
-        let local_name = app
-            .devices
-            .first()
-            .map(|d| d.name.clone())
-            .unwrap_or_else(|| local_id.clone());
+        let local_name = app.local_display_name.clone();
 
         (local_id, local_name, resolved_ip, resolved_name)
     };
@@ -985,6 +993,38 @@ pub fn forget_device(device_id: String, state: State<'_, SharedAppState>) -> Res
     let trust_store = friday_network::TrustStore::new(None);
     let _ = trust_store.remove_trusted(&device_id);
     unpair_device(device_id, state)
+}
+
+#[tauri::command]
+pub fn set_device_input_preferences(
+    device_id: String,
+    share_mouse: bool,
+    share_keyboard: bool,
+    state: State<'_, SharedAppState>,
+) -> Result<DeviceInfo, String> {
+    let mut app = state.lock().unwrap();
+    if let Some(dev) = app
+        .devices
+        .iter_mut()
+        .find(|d| d.id == device_id || d.ip_address == device_id)
+    {
+        dev.share_mouse = share_mouse;
+        dev.share_keyboard = share_keyboard;
+        let updated = dev.clone();
+        let name = updated.name.clone();
+        app.add_log(
+            "INFO",
+            "friday_core::input",
+            &format!(
+                "Updated input preferences for {}: mouse={}, keyboard={}",
+                name, share_mouse, share_keyboard
+            ),
+        );
+        app.persist_config();
+        Ok(updated)
+    } else {
+        Err(format!("Device {} not found", device_id))
+    }
 }
 
 #[tauri::command]

@@ -9,7 +9,8 @@ pub use coordinates::{DisplayBounds, NormalizedPoint};
 pub use error::{CoreError, Result};
 pub use events::{ElementState, InputEvent, KeyCode, KeyboardEvent, MouseButton, MouseEvent};
 pub use ownership::{
-    ActiveDevice, DeviceOwnershipState, ExclusiveOwnershipRouter, RoutingDecision,
+    ActiveDevice, DeviceOwnershipState, DevicePermissions, ExclusiveOwnershipRouter,
+    RoutingDecision,
 };
 pub use state::{CursorMemory, HeldInputState};
 pub use topology::{

@@ -10,7 +10,8 @@ use tracing::{debug, info, warn};
 
 use friday_agent::control::ControlMessage;
 use friday_core::{
-    CircularTopology, Edge, ElementState, InputEvent, MouseButton, MouseEvent, NormalizedPoint,
+    CircularTopology, Edge, ElementState, HeldInputState, InputEvent, KeyCode, KeyboardEvent,
+    MouseButton, MouseEvent, NormalizedPoint,
 };
 use friday_network::{NetworkPacket, PacketPayload};
 
@@ -41,9 +42,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 #[cfg(target_os = "windows")]
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, GetCursorPos, GetSystemMetrics, PeekMessageW, SetCursorPos,
-    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, MSG, MSLLHOOKSTRUCT, PM_REMOVE,
-    SM_CXSCREEN, SM_CYSCREEN, WH_MOUSE_LL, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-    WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP,
+    SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+    PM_REMOVE, SM_CXSCREEN, SM_CYSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN, WM_KEYUP,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
+    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
 // ── Native platform cursor & screen helpers ──────────────────────────────────
@@ -225,8 +227,8 @@ unsafe extern "system" fn low_level_mouse_proc(
                         dx = info.pt.x - fx;
                         dy = info.pt.y - fy;
 
-                        // Lock cursor back at the freeze anchor
-                        set_local_cursor_pos(fx, fy);
+                        // Lock cursor back at the freeze anchor without reentrant mouse_event calls
+                        let _ = SetCursorPos(fx, fy);
                     } else if !HAS_LAST_HOOK_PT.swap(true, Ordering::SeqCst) {
                         LAST_HOOK_X.store(info.pt.x, Ordering::Relaxed);
                         LAST_HOOK_Y.store(info.pt.y, Ordering::Relaxed);
@@ -342,9 +344,144 @@ unsafe extern "system" fn low_level_mouse_proc(
 }
 
 #[cfg(target_os = "windows")]
+unsafe extern "system" fn low_level_keyboard_proc(
+    n_code: i32,
+    w_param: WPARAM,
+    l_param: LPARAM,
+) -> LRESULT {
+    if n_code >= 0 {
+        let info = *(l_param.0 as *const KBDLLHOOKSTRUCT);
+
+        // Filter out FRIDAY's own programmatic events
+        if info.dwExtraInfo == FRIDAY_INJECTED_MAGIC {
+            return CallNextHookEx(None, n_code, w_param, l_param);
+        }
+
+        // Emergency escape: check if Escape key is pressed while controlling remote
+        if info.vkCode == VK_ESCAPE.0 as u32 && IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+            info!("Emergency Escape pressed on Windows Host: restoring local control");
+            FREEZE_CURSOR_X.store(-1, Ordering::Relaxed);
+            FREEZE_CURSOR_Y.store(-1, Ordering::Relaxed);
+            IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+            return CallNextHookEx(None, n_code, w_param, l_param);
+        }
+
+        if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+            let msg = w_param.0 as u32;
+            let state = match msg {
+                WM_KEYDOWN | WM_SYSKEYDOWN => ElementState::Pressed,
+                WM_KEYUP | WM_SYSKEYUP => ElementState::Released,
+                _ => return CallNextHookEx(None, n_code, w_param, l_param),
+            };
+
+            let key_code = win32_vk_to_keycode(info.vkCode, info.flags.0);
+            if let Some(tx) = HOOK_EVENT_TX.get() {
+                let _ = tx.send(InputEvent::Keyboard(KeyboardEvent {
+                    key: key_code,
+                    state,
+                    timestamp: 0,
+                }));
+            }
+
+            // Suppress the key locally on Main Host so it does NOT type on host
+            return LRESULT(1);
+        }
+    }
+    CallNextHookEx(None, n_code, w_param, l_param)
+}
+
+#[cfg(target_os = "windows")]
+pub fn win32_vk_to_keycode(vk: u32, flags: u32) -> KeyCode {
+    match vk {
+        0x30 => KeyCode::Key0,
+        0x31 => KeyCode::Key1,
+        0x32 => KeyCode::Key2,
+        0x33 => KeyCode::Key3,
+        0x34 => KeyCode::Key4,
+        0x35 => KeyCode::Key5,
+        0x36 => KeyCode::Key6,
+        0x37 => KeyCode::Key7,
+        0x38 => KeyCode::Key8,
+        0x39 => KeyCode::Key9,
+        0x41 => KeyCode::A,
+        0x42 => KeyCode::B,
+        0x43 => KeyCode::C,
+        0x44 => KeyCode::D,
+        0x45 => KeyCode::E,
+        0x46 => KeyCode::F,
+        0x47 => KeyCode::G,
+        0x48 => KeyCode::H,
+        0x49 => KeyCode::I,
+        0x4A => KeyCode::J,
+        0x4B => KeyCode::K,
+        0x4C => KeyCode::L,
+        0x4D => KeyCode::M,
+        0x4E => KeyCode::N,
+        0x4F => KeyCode::O,
+        0x50 => KeyCode::P,
+        0x51 => KeyCode::Q,
+        0x52 => KeyCode::R,
+        0x53 => KeyCode::S,
+        0x54 => KeyCode::T,
+        0x55 => KeyCode::U,
+        0x56 => KeyCode::V,
+        0x57 => KeyCode::W,
+        0x58 => KeyCode::X,
+        0x59 => KeyCode::Y,
+        0x5A => KeyCode::Z,
+        0x70 => KeyCode::F1,
+        0x71 => KeyCode::F2,
+        0x72 => KeyCode::F3,
+        0x73 => KeyCode::F4,
+        0x74 => KeyCode::F5,
+        0x75 => KeyCode::F6,
+        0x76 => KeyCode::F7,
+        0x77 => KeyCode::F8,
+        0x78 => KeyCode::F9,
+        0x79 => KeyCode::F10,
+        0x7A => KeyCode::F11,
+        0x7B => KeyCode::F12,
+        0x08 => KeyCode::Backspace,
+        0x09 => KeyCode::Tab,
+        0x0D => KeyCode::Enter,
+        0x14 => KeyCode::CapsLock,
+        0x1B => KeyCode::Escape,
+        0x20 => KeyCode::Space,
+        0x25 => KeyCode::Left,
+        0x26 => KeyCode::Up,
+        0x27 => KeyCode::Right,
+        0x28 => KeyCode::Down,
+        0x10 => KeyCode::LeftShift,
+        0xA0 => KeyCode::LeftShift,
+        0xA1 => KeyCode::RightShift,
+        0x11 => {
+            if (flags & 1) != 0 {
+                KeyCode::RightControl
+            } else {
+                KeyCode::LeftControl
+            }
+        }
+        0xA2 => KeyCode::LeftControl,
+        0xA3 => KeyCode::RightControl,
+        0x12 => {
+            if (flags & 1) != 0 {
+                KeyCode::RightAlt
+            } else {
+                KeyCode::LeftAlt
+            }
+        }
+        0xA4 => KeyCode::LeftAlt,
+        0xA5 => KeyCode::RightAlt,
+        0x5B => KeyCode::LeftSuper,
+        0x5C => KeyCode::RightSuper,
+        other => KeyCode::Other(other),
+    }
+}
+
+#[cfg(target_os = "windows")]
 fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
-    // SAFETY: Low-level mouse hook on dedicated worker thread
-    let hook = unsafe {
+    // SAFETY: Low-level mouse and keyboard hooks on dedicated worker thread
+    let mouse_hook = unsafe {
         SetWindowsHookExW(
             WH_MOUSE_LL,
             Some(low_level_mouse_proc),
@@ -352,9 +489,23 @@ fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
             0,
         )
     };
+    let kbd_hook = unsafe {
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(low_level_keyboard_proc),
+            HINSTANCE(std::ptr::null_mut()),
+            0,
+        )
+    };
 
-    if let Ok(h) = hook {
-        info!("Windows WH_MOUSE_LL hook successfully installed");
+    let has_mouse = mouse_hook.is_ok();
+    let has_kbd = kbd_hook.is_ok();
+
+    if has_mouse || has_kbd {
+        info!(
+            "Windows low-level hooks successfully installed (mouse={}, keyboard={})",
+            has_mouse, has_kbd
+        );
         let mut msg = MSG::default();
         while !stop_flag.load(Ordering::Relaxed) {
             // SAFETY: Pumping messages to keep Windows hook dispatching
@@ -367,13 +518,18 @@ fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
                 }
             }
         }
-        // SAFETY: Cleanup hook upon thread exit
+        // SAFETY: Cleanup hooks upon thread exit
         unsafe {
-            let _ = UnhookWindowsHookEx(h);
+            if let Ok(h) = mouse_hook {
+                let _ = UnhookWindowsHookEx(h);
+            }
+            if let Ok(h) = kbd_hook {
+                let _ = UnhookWindowsHookEx(h);
+            }
         }
-        info!("Windows WH_MOUSE_LL hook uninstalled");
+        info!("Windows low-level hooks uninstalled");
     } else {
-        warn!("Failed to install Windows WH_MOUSE_LL hook — will use cursor trapping fallback");
+        warn!("Failed to install Windows WH_MOUSE_LL and WH_KEYBOARD_LL hooks");
     }
 }
 
@@ -980,16 +1136,23 @@ fn handle_incoming_control(
                         .find(|d| d.ip_address == src.ip().to_string())
                     {
                         dev.is_connected = true;
+                        if !device_name.is_empty() {
+                            dev.name = device_name.clone();
+                        }
                     }
                 }
+                let local_name = shared_state
+                    .lock()
+                    .map(|a| a.local_display_name.clone())
+                    .unwrap_or_else(|_| crate::state::detect_local_hostname());
                 let (w, h) = get_screen_dimensions();
                 let welcome = ControlMessage::Welcome {
-                    device_name: crate::state::detect_local_hostname(),
+                    device_name: local_name.clone(),
                     screen: friday_agent::control::ScreenInfo {
                         width: w as u32,
                         height: h as u32,
                         scale_factor: 1.0,
-                        device_name: crate::state::detect_local_hostname(),
+                        device_name: local_name,
                     },
                 };
                 if let Ok(bytes) = welcome.encode() {
@@ -1014,6 +1177,9 @@ fn handle_incoming_control(
                         .find(|d| d.ip_address == src.ip().to_string())
                     {
                         dev.is_connected = true;
+                        if !device_name.is_empty() {
+                            dev.name = device_name.clone();
+                        }
                     }
                 }
             }
@@ -1074,6 +1240,9 @@ fn run_mouse_router(
     let mut move_log_dx = 0i32;
     let mut move_log_dy = 0i32;
 
+    let mut held_inputs = HeldInputState::new();
+    let mut last_heartbeat_ping = Instant::now();
+
     while !stop_flag.load(Ordering::Relaxed) {
         let (is_running, is_paused, is_host, local_id, active_id, connected_peers, dwell_ms) = {
             let app = shared_state.lock().unwrap();
@@ -1098,6 +1267,16 @@ fn run_mouse_router(
         // Client machines NEVER run mouse edge routing or capture local mouse!
         if !is_running || is_paused || !is_host || connected_peers.is_empty() {
             if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
+                if !target_ip.is_empty() {
+                    for release_evt in held_inputs.generate_safety_release_events(0) {
+                        seq = seq.wrapping_add(1);
+                        let packet = NetworkPacket::new_input(release_evt, seq);
+                        if let Ok(enc) = packet.encode() {
+                            let dest = format!("{}:{}", target_ip, target_port);
+                            let _ = send_socket.send_to(&enc, &dest);
+                        }
+                    }
+                }
                 IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
             }
             std::thread::sleep(Duration::from_millis(50));
@@ -1302,11 +1481,64 @@ fn run_mouse_router(
         }
         // ── Case 2: Physical mouse is captured locally, driving active remote device ──
         else if is_controlling {
-            // Drain captured mouse events from the hook and transmit to active remote peer
+            let (target_share_mouse, target_share_keyboard) = {
+                connected_peers
+                    .iter()
+                    .find(|d| d.id == current_target_device_id)
+                    .map(|d| (d.share_mouse, d.share_keyboard))
+                    .unwrap_or((true, true))
+            };
+
+            // Heartbeat Keepalive: ping target every 500ms so receiver never drops out during inactivity
+            if last_heartbeat_ping.elapsed() >= Duration::from_millis(500) {
+                last_heartbeat_ping = Instant::now();
+                let ping = ControlMessage::Ping { seq };
+                if let Ok(bytes) = ping.encode() {
+                    let packet = NetworkPacket::new_control(bytes);
+                    if let Ok(enc) = packet.encode() {
+                        let dest = format!("{}:{}", target_ip, target_port);
+                        let _ = send_socket.send_to(&enc, &dest);
+                    }
+                }
+            }
+
+            // Drain captured input events from the hook and transmit to active remote peer
             let mut drained = false;
             while let Ok(evt) = event_rx.try_recv() {
                 drained = true;
                 seq = seq.wrapping_add(1);
+                last_heartbeat_ping = Instant::now();
+
+                let should_forward = match &evt {
+                    InputEvent::Mouse(m) => {
+                        if !target_share_mouse {
+                            false
+                        } else {
+                            if let MouseEvent::Button { button, state, .. } = m {
+                                held_inputs.record_mouse_button(*button, *state);
+                            }
+                            true
+                        }
+                    }
+                    InputEvent::Keyboard(k) => {
+                        if !target_share_keyboard {
+                            false
+                        } else {
+                            held_inputs.record_key(k.key.clone(), k.state);
+                            if let Ok(mut app) = shared_state.lock() {
+                                app.add_log(
+                                    "INFO",
+                                    "friday_core::keyboard",
+                                    &format!(
+                                        "Host forwarded key {:?} {:?} to {}",
+                                        k.key, k.state, current_target_device_id
+                                    ),
+                                );
+                            }
+                            true
+                        }
+                    }
+                };
 
                 // Update virtual cursor coordinates on active remote device and log key inputs
                 match &evt {
@@ -1432,7 +1664,17 @@ fn run_mouse_router(
                                         current_target_device_id, hit_edge, local_id
                                     );
 
-                                        // Release any held buttons on the remote device
+                                        // Release any held buttons and keys on the remote device
+                                        for release_evt in
+                                            held_inputs.generate_safety_release_events(0)
+                                        {
+                                            seq = seq.wrapping_add(1);
+                                            let packet = NetworkPacket::new_input(release_evt, seq);
+                                            if let Ok(enc) = packet.encode() {
+                                                let dest = format!("{}:{}", target_ip, target_port);
+                                                let _ = send_socket.send_to(&enc, &dest);
+                                            }
+                                        }
                                         if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
                                             let packet = NetworkPacket::new_control(bytes);
                                             if let Ok(enc) = packet.encode() {
@@ -1513,6 +1755,16 @@ fn run_mouse_router(
                                         );
 
                                         // Release inputs on previous peer
+                                        for release_evt in
+                                            held_inputs.generate_safety_release_events(0)
+                                        {
+                                            seq = seq.wrapping_add(1);
+                                            let packet = NetworkPacket::new_input(release_evt, seq);
+                                            if let Ok(enc) = packet.encode() {
+                                                let dest = format!("{}:{}", target_ip, target_port);
+                                                let _ = send_socket.send_to(&enc, &dest);
+                                            }
+                                        }
                                         if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
                                             let packet = NetworkPacket::new_control(bytes);
                                             if let Ok(enc) = packet.encode() {
@@ -1613,11 +1865,13 @@ fn run_mouse_router(
                     return_dwell_start = None;
                 }
 
-                // Send input packet over UDP to target peer
-                let packet = NetworkPacket::new_input(evt, seq);
-                if let Ok(enc) = packet.encode() {
-                    let dest = format!("{}:{}", target_ip, target_port);
-                    let _ = send_socket.send_to(&enc, &dest);
+                // Send input packet over UDP to target peer if allowed by preferences
+                if should_forward {
+                    let packet = NetworkPacket::new_input(evt, seq);
+                    if let Ok(enc) = packet.encode() {
+                        let dest = format!("{}:{}", target_ip, target_port);
+                        let _ = send_socket.send_to(&enc, &dest);
+                    }
                 }
             }
 
@@ -1642,6 +1896,14 @@ fn run_mouse_router(
 
             // Also check if active_id was changed via GUI (e.g. user clicked Take Control on local device)
             if active_id == local_id && is_controlling {
+                for release_evt in held_inputs.generate_safety_release_events(0) {
+                    seq = seq.wrapping_add(1);
+                    let packet = NetworkPacket::new_input(release_evt, seq);
+                    if let Ok(enc) = packet.encode() {
+                        let dest = format!("{}:{}", target_ip, target_port);
+                        let _ = send_socket.send_to(&enc, &dest);
+                    }
+                }
                 IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
                 return_dwell_start = None;
             }
@@ -1736,14 +1998,18 @@ pub fn notify_device_connected(shared_state: &SharedAppState, device_id: &str) {
     };
 
     if let Some((ip, port)) = target {
+        let local_name = shared_state
+            .lock()
+            .map(|a| a.local_display_name.clone())
+            .unwrap_or_else(|_| crate::state::detect_local_hostname());
         let (w, h) = get_screen_dimensions();
         let hello = ControlMessage::Hello {
-            device_name: crate::state::detect_local_hostname(),
+            device_name: local_name.clone(),
             screen: friday_agent::control::ScreenInfo {
                 width: w as u32,
                 height: h as u32,
                 scale_factor: 1.0,
-                device_name: crate::state::detect_local_hostname(),
+                device_name: local_name,
             },
         };
         if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {

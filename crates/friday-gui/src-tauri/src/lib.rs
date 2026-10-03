@@ -103,6 +103,7 @@ pub fn run() {
             commands::approve_pairing,
             commands::reject_pairing,
             commands::forget_device,
+            commands::set_device_input_preferences,
             commands::get_connection_status,
             commands::get_network_diagnostics,
         ])

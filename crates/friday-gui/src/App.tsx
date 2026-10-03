@@ -246,6 +246,19 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleUpdateInputPreferences = async (
+    deviceId: string,
+    shareMouse: boolean,
+    shareKeyboard: boolean
+  ) => {
+    try {
+      await api.setDeviceInputPreferences(deviceId, shareMouse, shareKeyboard);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to update input preferences:", e);
+    }
+  };
+
   const handleRunDiagnostics = async () => {
     setIsLoadingDiag(true);
     try {
@@ -336,6 +349,7 @@ export const App: React.FC = () => {
             }}
             onRespondToPairRequest={handleRespondToPairRequest}
             onUpdateLocalName={handleUpdateLocalName}
+            onUpdateInputPreferences={handleUpdateInputPreferences}
             onNavigateToAdvancedNetwork={() => setCurrentTab("settings")}
           />
         )}

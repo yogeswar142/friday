@@ -357,6 +357,19 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
       return undefined as unknown as T;
     }
 
+    case "set_device_input_preferences": {
+      const devId = (args?.deviceId || args?.device_id) as string;
+      const sm = args?.share_mouse ?? args?.shareMouse ?? true;
+      const sk = args?.share_keyboard ?? args?.shareKeyboard ?? true;
+      const dev = mockDevices.find((d) => d.id === devId || d.ip_address === devId);
+      if (dev) {
+        dev.share_mouse = Boolean(sm);
+        dev.share_keyboard = Boolean(sk);
+        return dev as unknown as T;
+      }
+      return undefined as unknown as T;
+    }
+
     case "get_connection_status":
       return "Connected" as unknown as T;
 
@@ -467,5 +480,19 @@ export const api = {
     invokeTauri<NetworkDiagnosticsDto>("get_network_diagnostics", {
       targetId,
       target_id: targetId,
+    }),
+  /** Update mouse and keyboard sharing preferences for a specific device */
+  setDeviceInputPreferences: (
+    deviceId: string,
+    shareMouse: boolean,
+    shareKeyboard: boolean
+  ) =>
+    invokeTauri<DeviceInfo>("set_device_input_preferences", {
+      deviceId,
+      device_id: deviceId,
+      shareMouse,
+      share_mouse: shareMouse,
+      shareKeyboard,
+      share_keyboard: shareKeyboard,
     }),
 };

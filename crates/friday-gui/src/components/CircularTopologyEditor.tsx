@@ -36,9 +36,13 @@ export const CircularTopologyEditor: React.FC<CircularTopologyEditorProps> = ({
   const ring = topology?.ring || [];
 
   const getDeviceDisplayName = (id: string): string => {
-    const dev = devices.find((d) => d.id === id);
-    if (dev?.name) return dev.name;
-    if (localDevice && id === localDevice.device_id) return localDevice.display_name;
+    const dev = devices.find((d) => d.id === id || d.ip_address === id);
+    if (dev?.name) {
+      return dev.name.replace(/ \(This Machine\)$/, "");
+    }
+    if (localDevice && (id === localDevice.device_id || id === localDevice.hostname)) {
+      return localDevice.display_name;
+    }
     return id.length > 12 ? `${id.slice(0, 8)}...` : id;
   };
 

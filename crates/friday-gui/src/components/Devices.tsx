@@ -36,6 +36,7 @@ interface DevicesProps {
   onRefreshDiscovery: () => void;
   onRespondToPairRequest: (pin: string, accept: boolean) => void;
   onUpdateLocalName: (name: string) => Promise<void>;
+  onUpdateInputPreferences?: (deviceId: string, shareMouse: boolean, shareKeyboard: boolean) => Promise<void>;
   onNavigateToAdvancedNetwork?: () => void;
 }
 
@@ -55,6 +56,7 @@ export const Devices: React.FC<DevicesProps> = ({
   onRefreshDiscovery,
   onRespondToPairRequest,
   onUpdateLocalName,
+  onUpdateInputPreferences,
   onNavigateToAdvancedNetwork,
 }) => {
   const [pairingModalDev, setPairingModalDev] = useState<DiscoveredDevice | null>(null);
@@ -582,6 +584,81 @@ export const Devices: React.FC<DevicesProps> = ({
                       <span>{d.is_connected ? `${d.latency_ms > 0 ? d.latency_ms.toFixed(1) : "< 1.0"} ms` : "—"}</span>
                     </div>
                   </div>
+
+                  {/* Input Sharing Preferences (Per-device: Mouse & Keyboard) */}
+                  {isHost && (
+                    <div
+                      style={{
+                        background: "var(--bg-card)",
+                        padding: "10px 14px",
+                        borderRadius: "var(--radius-sm)",
+                        border: "1px solid var(--border-subtle)",
+                        display: "flex",
+                        flexDirection: "column",
+                        gap: "8px",
+                        fontSize: "12px",
+                      }}
+                    >
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{ fontWeight: 600, color: "var(--text-secondary)", fontSize: "11px", letterSpacing: "0.03em", textTransform: "uppercase" }}>
+                          Input Permissions
+                        </span>
+                        <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                          Control remote device sharing
+                        </span>
+                      </div>
+
+                      <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            cursor: "pointer",
+                            userSelect: "none",
+                            color: (d.share_mouse ?? true) ? "var(--text-primary)" : "var(--text-muted)",
+                            fontWeight: (d.share_mouse ?? true) ? 600 : 400,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={d.share_mouse ?? true}
+                            onChange={(e) => {
+                              if (onUpdateInputPreferences) {
+                                onUpdateInputPreferences(d.id, e.target.checked, d.share_keyboard ?? true);
+                              }
+                            }}
+                            style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
+                          />
+                          <span>Share Mouse</span>
+                        </label>
+
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            cursor: "pointer",
+                            userSelect: "none",
+                            color: (d.share_keyboard ?? true) ? "var(--text-primary)" : "var(--text-muted)",
+                            fontWeight: (d.share_keyboard ?? true) ? 600 : 400,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={d.share_keyboard ?? true}
+                            onChange={(e) => {
+                              if (onUpdateInputPreferences) {
+                                onUpdateInputPreferences(d.id, d.share_mouse ?? true, e.target.checked);
+                              }
+                            }}
+                            style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
+                          />
+                          <span>Share Keyboard</span>
+                        </label>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Actions Row */}
                   <div style={{ display: "flex", gap: "8px", marginTop: "auto" }}>

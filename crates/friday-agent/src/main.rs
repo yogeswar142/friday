@@ -293,6 +293,39 @@ async fn run_sender(
         });
     }
 
+    // Start Windows capture loop — installs WH_MOUSE_LL + WH_KEYBOARD_LL.
+    // Runs in a dedicated OS thread because Win32 LL hooks require a message pump.
+    // Captures from ALL pointer devices (touchpad, USB, Bluetooth, simultaneous)
+    // and ALL keyboard devices without any per-device enumeration.
+    #[cfg(target_os = "windows")]
+    {
+        let stop = session.stop.clone();
+        let remote_active_clone = is_remote_active.clone();
+        let rem_w = session.remote_screen_w.clone();
+        let rem_h = session.remote_screen_h.clone();
+        let dwell = session.dwell_ms.clone();
+        // keyboard_enabled=true by default; updated externally when per-device
+        // permissions change (e.g., when a device with keyboard OFF becomes active).
+        let keyboard_enabled = Arc::new(AtomicBool::new(true));
+        let input_tx_win = input_tx.clone();
+        let edge_tx_win = edge_tx.clone();
+        std::thread::spawn(move || {
+            friday_agent::platform::windows::capture_loop(
+                input_tx_win,
+                stop,
+                remote_active_clone,
+                keyboard_enabled,
+                _edge_px,
+                screen_w,
+                screen_h,
+                edge_tx_win,
+                rem_w,
+                rem_h,
+                dwell,
+            );
+        });
+    }
+
     // Send Hello handshake
     let hello = ControlMessage::Hello {
         device_name: hostname(),
@@ -420,6 +453,34 @@ async fn run_connect(
                 screen_w,
                 screen_h,
                 edge_tx,
+                rem_w,
+                rem_h,
+                dwell,
+            );
+        });
+    }
+
+    // ── Windows capture loop in dedicated OS thread ──
+    #[cfg(target_os = "windows")]
+    {
+        let stop = session.stop.clone();
+        let remote_active_clone = is_remote_active.clone();
+        let rem_w = session.remote_screen_w.clone();
+        let rem_h = session.remote_screen_h.clone();
+        let dwell = session.dwell_ms.clone();
+        let keyboard_enabled = Arc::new(AtomicBool::new(true));
+        let input_tx_win = input_tx.clone();
+        let edge_tx_win = edge_tx.clone();
+        std::thread::spawn(move || {
+            friday_agent::platform::windows::capture_loop(
+                input_tx_win,
+                stop,
+                remote_active_clone,
+                keyboard_enabled,
+                _edge_px,
+                screen_w,
+                screen_h,
+                edge_tx_win,
                 rem_w,
                 rem_h,
                 dwell,

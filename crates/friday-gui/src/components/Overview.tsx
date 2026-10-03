@@ -113,7 +113,7 @@ export const Overview: React.FC<OverviewProps> = ({
             </span>
           </div>
           <div className="metric-value">
-            {devices.find((d) => d.id === status?.active_device_id)?.name ||
+            {devices.find((d) => d.id === status?.active_device_id || d.ip_address === status?.active_device_id)?.name.replace(/ \(This Machine\)$/, "") ||
               (localDevice && status?.active_device_id === localDevice.device_id ? localDevice.display_name : status?.active_device_id) ||
               "None"}
           </div>
@@ -121,7 +121,7 @@ export const Overview: React.FC<OverviewProps> = ({
             {status?.is_host
               ? (status?.active_device_id === status?.local_device_id || (localDevice && status?.active_device_id === localDevice.device_id)
                   ? "Physical mouse active locally on Host"
-                  : `Physical mouse controlling: ${devices.find((d) => d.id === status?.active_device_id)?.name || status?.active_device_id}`)
+                  : `Physical mouse controlling: ${devices.find((d) => d.id === status?.active_device_id || d.ip_address === status?.active_device_id)?.name.replace(/ \(This Machine\)$/, "") || status?.active_device_id}`)
               : (status?.active_device_id === status?.local_device_id
                   ? "Host mouse is currently active on this screen"
                   : "Host mouse is on another screen")}
@@ -192,8 +192,12 @@ export const Overview: React.FC<OverviewProps> = ({
             }}
           >
             {ring.map((nodeId, idx) => {
-              const dev = devices.find((d) => d.id === nodeId);
-              const displayName = dev ? dev.name : (localDevice && nodeId === localDevice.device_id ? localDevice.display_name : nodeId);
+              const dev = devices.find((d) => d.id === nodeId || d.ip_address === nodeId);
+              const displayName = dev
+                ? dev.name.replace(/ \(This Machine\)$/, "")
+                : (localDevice && (nodeId === localDevice.device_id || nodeId === localDevice.hostname)
+                    ? localDevice.display_name
+                    : (nodeId.length > 12 ? `${nodeId.slice(0, 8)}...` : nodeId));
               const isActive = nodeId === status?.active_device_id;
               return (
                 <React.Fragment key={nodeId}>

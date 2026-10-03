@@ -25,6 +25,8 @@ export interface DeviceInfo {
   capabilities: string[];
   connection_state?: string;
   trust_state?: string;
+  share_mouse?: boolean;
+  share_keyboard?: boolean;
 }
 
 export interface DiscoveredDevice {

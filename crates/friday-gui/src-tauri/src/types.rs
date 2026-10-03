@@ -26,6 +26,10 @@ fn default_nearby_state() -> String {
     "Nearby".to_string()
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub id: String,
@@ -43,6 +47,10 @@ pub struct DeviceInfo {
     pub connection_state: String,
     #[serde(default = "default_trusted_state")]
     pub trust_state: String,
+    #[serde(default = "default_true")]
+    pub share_mouse: bool,
+    #[serde(default = "default_true")]
+    pub share_keyboard: bool,
 }
 
 impl DeviceInfo {
@@ -72,6 +80,8 @@ impl DeviceInfo {
             ],
             connection_state: "Connected".into(),
             trust_state: "Trusted".into(),
+            share_mouse: true,
+            share_keyboard: true,
         }
     }
 }
