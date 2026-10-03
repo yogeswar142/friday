@@ -36,7 +36,8 @@ interface DevicesProps {
   onRefreshDiscovery: () => void;
   onRespondToPairRequest: (pin: string, accept: boolean) => void;
   onUpdateLocalName: (name: string) => Promise<void>;
-  onUpdateInputPreferences?: (deviceId: string, shareMouse: boolean, shareKeyboard: boolean) => Promise<void>;
+  onUpdateInputPreferences?: (deviceId: string, shareMouse: boolean, shareKeyboard: boolean, shareClipboard?: boolean) => Promise<void>;
+  onUpdateHostInputPreferences?: (shareMouse: boolean, shareKeyboard: boolean, shareClipboard: boolean) => Promise<void>;
   onNavigateToAdvancedNetwork?: () => void;
 }
 
@@ -57,6 +58,7 @@ export const Devices: React.FC<DevicesProps> = ({
   onRespondToPairRequest,
   onUpdateLocalName,
   onUpdateInputPreferences,
+  onUpdateHostInputPreferences,
   onNavigateToAdvancedNetwork,
 }) => {
   const [pairingModalDev, setPairingModalDev] = useState<DiscoveredDevice | null>(null);
@@ -69,6 +71,11 @@ export const Devices: React.FC<DevicesProps> = ({
   const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
   const [newNameInput, setNewNameInput] = useState("");
   const [isSavingName, setIsSavingName] = useState(false);
+
+  const localDeviceInfo = devices.find((d) => d.is_local) || devices[0];
+  const hostShareMouse = localDeviceInfo?.share_mouse ?? true;
+  const hostShareKeyboard = localDeviceInfo?.share_keyboard ?? true;
+  const hostShareClipboard = localDeviceInfo?.share_clipboard ?? true;
 
   const startPairingFlow = (dev: DiscoveredDevice) => {
     const pin = Math.floor(100000 + Math.random() * 900000).toString();
@@ -395,6 +402,104 @@ export const Devices: React.FC<DevicesProps> = ({
           </div>
         </div>
 
+        {/* Host Input Sharing Controls */}
+        <div
+          style={{
+            marginTop: "14px",
+            padding: "12px 14px",
+            background: "var(--bg-card)",
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--border-subtle)",
+            display: "flex",
+            flexDirection: "column",
+            gap: "8px",
+            fontSize: "12px",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <span style={{ fontWeight: 600, color: "var(--text-secondary)", fontSize: "11px", letterSpacing: "0.03em", textTransform: "uppercase" }}>
+              Host Sharing Controls
+            </span>
+            <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+              Toggle which host inputs are shared with remote devices
+            </span>
+          </div>
+
+          <div style={{ display: "flex", gap: "20px", alignItems: "center", flexWrap: "wrap" }}>
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                cursor: "pointer",
+                userSelect: "none",
+                color: hostShareMouse ? "var(--text-primary)" : "var(--text-muted)",
+                fontWeight: hostShareMouse ? 600 : 400,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={hostShareMouse}
+                onChange={(e) => {
+                  if (onUpdateHostInputPreferences) {
+                    onUpdateHostInputPreferences(e.target.checked, hostShareKeyboard, hostShareClipboard);
+                  }
+                }}
+                style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
+              />
+              <span>🖱️ Share Mouse</span>
+            </label>
+
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                cursor: "pointer",
+                userSelect: "none",
+                color: hostShareKeyboard ? "var(--text-primary)" : "var(--text-muted)",
+                fontWeight: hostShareKeyboard ? 600 : 400,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={hostShareKeyboard}
+                onChange={(e) => {
+                  if (onUpdateHostInputPreferences) {
+                    onUpdateHostInputPreferences(hostShareMouse, e.target.checked, hostShareClipboard);
+                  }
+                }}
+                style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
+              />
+              <span>⌨️ Share Keyboard</span>
+            </label>
+
+            <label
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: "6px",
+                cursor: "pointer",
+                userSelect: "none",
+                color: hostShareClipboard ? "var(--text-primary)" : "var(--text-muted)",
+                fontWeight: hostShareClipboard ? 600 : 400,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={hostShareClipboard}
+                onChange={(e) => {
+                  if (onUpdateHostInputPreferences) {
+                    onUpdateHostInputPreferences(hostShareMouse, hostShareKeyboard, e.target.checked);
+                  }
+                }}
+                style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
+              />
+              <span>📋 Share Clipboard</span>
+            </label>
+          </div>
+        </div>
+
         <div
           style={{
             marginTop: "16px",
@@ -608,7 +713,7 @@ export const Devices: React.FC<DevicesProps> = ({
                         </span>
                       </div>
 
-                      <div style={{ display: "flex", gap: "16px", alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: "16px", alignItems: "center", flexWrap: "wrap" }}>
                         <label
                           style={{
                             display: "flex",
@@ -625,7 +730,7 @@ export const Devices: React.FC<DevicesProps> = ({
                             checked={d.share_mouse ?? true}
                             onChange={(e) => {
                               if (onUpdateInputPreferences) {
-                                onUpdateInputPreferences(d.id, e.target.checked, d.share_keyboard ?? true);
+                                onUpdateInputPreferences(d.id, e.target.checked, d.share_keyboard ?? true, d.share_clipboard ?? true);
                               }
                             }}
                             style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
@@ -649,12 +754,36 @@ export const Devices: React.FC<DevicesProps> = ({
                             checked={d.share_keyboard ?? true}
                             onChange={(e) => {
                               if (onUpdateInputPreferences) {
-                                onUpdateInputPreferences(d.id, d.share_mouse ?? true, e.target.checked);
+                                onUpdateInputPreferences(d.id, d.share_mouse ?? true, e.target.checked, d.share_clipboard ?? true);
                               }
                             }}
                             style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
                           />
                           <span>Share Keyboard</span>
+                        </label>
+
+                        <label
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "6px",
+                            cursor: "pointer",
+                            userSelect: "none",
+                            color: (d.share_clipboard ?? true) ? "var(--text-primary)" : "var(--text-muted)",
+                            fontWeight: (d.share_clipboard ?? true) ? 600 : 400,
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={d.share_clipboard ?? true}
+                            onChange={(e) => {
+                              if (onUpdateInputPreferences) {
+                                onUpdateInputPreferences(d.id, d.share_mouse ?? true, d.share_keyboard ?? true, e.target.checked);
+                              }
+                            }}
+                            style={{ cursor: "pointer", accentColor: "var(--accent-emerald)" }}
+                          />
+                          <span>Share Clipboard</span>
                         </label>
                       </div>
                     </div>

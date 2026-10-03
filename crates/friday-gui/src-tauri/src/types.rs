@@ -51,6 +51,8 @@ pub struct DeviceInfo {
     pub share_mouse: bool,
     #[serde(default = "default_true")]
     pub share_keyboard: bool,
+    #[serde(default = "default_true")]
+    pub share_clipboard: bool,
 }
 
 impl DeviceInfo {
@@ -77,11 +79,13 @@ impl DeviceInfo {
                 "mouse_capture".into(),
                 "mouse_injection".into(),
                 "edge_detection".into(),
+                "clipboard".into(),
             ],
             connection_state: "Connected".into(),
             trust_state: "Trusted".into(),
             share_mouse: true,
             share_keyboard: true,
+            share_clipboard: true,
         }
     }
 }

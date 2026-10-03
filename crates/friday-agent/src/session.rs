@@ -400,6 +400,17 @@ async fn handle_control_message(
             session.set_mode(SessionMode::Receiver).await;
         }
 
+        ControlMessage::ClipboardSync {
+            text,
+            origin_device_id,
+        } => {
+            info!(
+                "ClipboardSync received from origin {} ({} chars)",
+                origin_device_id,
+                text.len()
+            );
+        }
+
         ControlMessage::Goodbye => {
             info!("Peer disconnected gracefully.");
             handle_disconnect(transport, session).await;

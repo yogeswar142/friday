@@ -59,6 +59,11 @@ pub enum ControlMessage {
     Pong {
         seq: u32,
     },
+    /// Text clipboard synchronization with loop-prevention origin device ID
+    ClipboardSync {
+        text: String,
+        origin_device_id: String,
+    },
     /// Graceful disconnect
     Goodbye,
 }

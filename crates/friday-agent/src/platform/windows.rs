@@ -39,30 +39,25 @@
 //! requirements are documented inline.
 
 #[cfg(target_os = "windows")]
-use windows::{
-    Win32::{
-        Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
-        System::SystemInformation::GetTickCount64,
-        UI::{
-            Input::KeyboardAndMouse::{
-                keybd_event, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-                KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, MOUSEEVENTF_ABSOLUTE,
-                MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
-                MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-                MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK,
-                MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
-            },
-            WindowsAndMessaging::{
-                CallNextHookEx, GetMessageW, SetCursorPos,
-                SetWindowsHookExW, ShowCursor, UnhookWindowsHookEx, GetSystemMetrics,
-                HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
-                SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
-                WH_KEYBOARD_LL, WH_MOUSE_LL,
-                WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN,
-                WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-                WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
-                WM_XBUTTONDOWN, WM_XBUTTONUP,
-            },
+use windows::Win32::{
+    Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM},
+    System::SystemInformation::GetTickCount64,
+    UI::{
+        Input::KeyboardAndMouse::{
+            keybd_event, MapVirtualKeyW, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE,
+            KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+            MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_HWHEEL, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP,
+            MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE, MOUSEEVENTF_RIGHTDOWN,
+            MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL, MOUSEINPUT,
+            VIRTUAL_KEY,
+        },
+        WindowsAndMessaging::{
+            CallNextHookEx, GetMessageW, GetSystemMetrics, SetCursorPos, SetWindowsHookExW,
+            ShowCursor, UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, MSLLHOOKSTRUCT,
+            SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
+            WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+            WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+            WM_XBUTTONDOWN, WM_XBUTTONUP,
         },
     },
 };
@@ -257,11 +252,7 @@ fn handle_local_edge(x: i32, y: i32, screen_w: i32, screen_h: i32, threshold: i3
 ///   - `WM_MOUSEMOVE` events are inspected for screen-edge proximity; a dwell
 ///     timer triggers an ownership handoff if the cursor lingers.
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn mouse_ll_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn mouse_ll_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // Per MSDN: nCode < 0 must pass to CallNextHookEx unmodified.
     if code < 0 {
         return CallNextHookEx(HHOOK::default(), code, wparam, lparam);
@@ -424,11 +415,7 @@ fn send_mouse_button(btn: MouseButton, state: ElementState, ts: u32) {
 /// hotkey (Ctrl+C / operator-triggered `force_restore_local_ownership`) handles
 /// escape.  `Escape` is routed exactly like any other key.
 #[cfg(target_os = "windows")]
-unsafe extern "system" fn keyboard_ll_proc(
-    code: i32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
+unsafe extern "system" fn keyboard_ll_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code < 0 {
         return CallNextHookEx(HHOOK::default(), code, wparam, lparam);
     }
@@ -595,6 +582,7 @@ fn vk_to_keycode(vk: u32) -> Option<KeyCode> {
 /// devices all produce events through the same hook — FRIDAY sees them all
 /// without any device enumeration or selection.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 pub fn capture_loop(
     input_tx: mpsc::Sender<InputEvent>,
     stop: Arc<AtomicBool>,
@@ -641,22 +629,29 @@ pub fn capture_loop(
     // SAFETY: SetWindowsHookExW is safe when called with a valid function pointer
     // and NULL module handle (required for LL hooks, which run in the hook thread
     // rather than in a DLL).
-    let mouse_hook = unsafe {
-        SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_ll_proc), HINSTANCE::default(), 0)
-    };
+    let mouse_hook =
+        unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_ll_proc), HINSTANCE::default(), 0) };
     let mouse_hook = match mouse_hook {
         Ok(h) => {
             session_log("[WIN CAPTURE] WH_MOUSE_LL installed — capturing ALL pointer devices");
             h
         }
         Err(e) => {
-            session_log(&format!("[WIN CAPTURE] FATAL: WH_MOUSE_LL install failed: {:?}", e));
+            session_log(&format!(
+                "[WIN CAPTURE] FATAL: WH_MOUSE_LL install failed: {:?}",
+                e
+            ));
             return;
         }
     };
 
     let kb_hook = unsafe {
-        SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_ll_proc), HINSTANCE::default(), 0)
+        SetWindowsHookExW(
+            WH_KEYBOARD_LL,
+            Some(keyboard_ll_proc),
+            HINSTANCE::default(),
+            0,
+        )
     };
     let kb_hook = match kb_hook {
         Ok(h) => {
@@ -664,7 +659,10 @@ pub fn capture_loop(
             h
         }
         Err(e) => {
-            session_log(&format!("[WIN CAPTURE] FATAL: WH_KEYBOARD_LL install failed: {:?}", e));
+            session_log(&format!(
+                "[WIN CAPTURE] FATAL: WH_KEYBOARD_LL install failed: {:?}",
+                e
+            ));
             // SAFETY: Unhooking a previously installed valid hook.
             unsafe { UnhookWindowsHookEx(mouse_hook).ok() };
             return;
@@ -692,13 +690,11 @@ pub fn capture_loop(
         // Periodically mirror the shared Arc atomics into module-level statics
         // so hook callbacks don't have to touch Arc overhead on the hot path.
         sync_ticker = sync_ticker.wrapping_add(1);
-        if sync_ticker % 64 == 0 {
-            CAPTURE_IS_REMOTE
-                .store(is_remote_active.load(Ordering::Relaxed), Ordering::Relaxed);
+        if sync_ticker.is_multiple_of(64) {
+            CAPTURE_IS_REMOTE.store(is_remote_active.load(Ordering::Relaxed), Ordering::Relaxed);
             CAPTURE_KEYBOARD_ENABLED
                 .store(keyboard_enabled.load(Ordering::Relaxed), Ordering::Relaxed);
-            CAPTURE_DWELL_MS
-                .store(dwell_ms.load(Ordering::Relaxed), Ordering::Relaxed);
+            CAPTURE_DWELL_MS.store(dwell_ms.load(Ordering::Relaxed), Ordering::Relaxed);
             let rw = remote_screen_w.load(Ordering::Relaxed);
             let rh = remote_screen_h.load(Ordering::Relaxed);
             CAPTURE_REMOTE_W.store(rw, Ordering::Relaxed);
@@ -795,20 +791,34 @@ pub fn inject_event(event: &InputEvent) -> AgentResult<()> {
                             let flags = match (button, state) {
                                 (MouseButton::Left, ElementState::Pressed) => MOUSEEVENTF_LEFTDOWN,
                                 (MouseButton::Left, ElementState::Released) => MOUSEEVENTF_LEFTUP,
-                                (MouseButton::Right, ElementState::Pressed) => MOUSEEVENTF_RIGHTDOWN,
+                                (MouseButton::Right, ElementState::Pressed) => {
+                                    MOUSEEVENTF_RIGHTDOWN
+                                }
                                 (MouseButton::Right, ElementState::Released) => MOUSEEVENTF_RIGHTUP,
-                                (MouseButton::Middle, ElementState::Pressed) => MOUSEEVENTF_MIDDLEDOWN,
-                                (MouseButton::Middle, ElementState::Released) => MOUSEEVENTF_MIDDLEUP,
+                                (MouseButton::Middle, ElementState::Pressed) => {
+                                    MOUSEEVENTF_MIDDLEDOWN
+                                }
+                                (MouseButton::Middle, ElementState::Released) => {
+                                    MOUSEEVENTF_MIDDLEUP
+                                }
                                 _ => return Ok(()),
                             };
                             windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
-                                flags, 0, 0, 0, FRIDAY_INJECTED_MAGIC,
+                                flags,
+                                0,
+                                0,
+                                0,
+                                FRIDAY_INJECTED_MAGIC,
                             );
                             return Ok(());
                         }
                         MouseEvent::MoveRel { dx, dy, .. } => {
                             windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
-                                MOUSEEVENTF_MOVE, *dx as i32, *dy as i32, 0, FRIDAY_INJECTED_MAGIC,
+                                MOUSEEVENTF_MOVE,
+                                *dx as i32,
+                                *dy as i32,
+                                0,
+                                FRIDAY_INJECTED_MAGIC,
                             );
                             return Ok(());
                         }
@@ -816,13 +826,21 @@ pub fn inject_event(event: &InputEvent) -> AgentResult<()> {
                             if *dy != 0 {
                                 let delta = (-(*dy as i32)) * 120;
                                 windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
-                                    MOUSEEVENTF_WHEEL, 0, 0, delta, FRIDAY_INJECTED_MAGIC,
+                                    MOUSEEVENTF_WHEEL,
+                                    0,
+                                    0,
+                                    delta,
+                                    FRIDAY_INJECTED_MAGIC,
                                 );
                             }
                             if *dx != 0 {
                                 let delta = (*dx as i32) * 120;
                                 windows::Win32::UI::Input::KeyboardAndMouse::mouse_event(
-                                    MOUSEEVENTF_HWHEEL, 0, 0, delta, FRIDAY_INJECTED_MAGIC,
+                                    MOUSEEVENTF_HWHEEL,
+                                    0,
+                                    0,
+                                    delta,
+                                    FRIDAY_INJECTED_MAGIC,
                                 );
                             }
                             return Ok(());
@@ -832,9 +850,16 @@ pub fn inject_event(event: &InputEvent) -> AgentResult<()> {
                 }
             } else if let InputEvent::Keyboard(kb) = event {
                 let (vk, flags) = keycode_to_vk_flags(&kb.key, kb.state);
+                // SAFETY: MapVirtualKeyW converts VirtualKey to hardware scancode for full application compatibility
+                let scan = unsafe {
+                    MapVirtualKeyW(
+                        vk.0 as u32,
+                        windows::Win32::UI::Input::KeyboardAndMouse::MAP_VIRTUAL_KEY_TYPE(0),
+                    ) as u8
+                };
                 // SAFETY: keybd_event is a documented Win32 fallback API.
                 unsafe {
-                    keybd_event(vk.0 as u8, 0, flags, FRIDAY_INJECTED_MAGIC);
+                    keybd_event(vk.0 as u8, scan, flags, FRIDAY_INJECTED_MAGIC);
                 }
                 return Ok(());
             }
@@ -864,7 +889,10 @@ fn build_inputs(event: &InputEvent) -> AgentResult<Vec<INPUT>> {
     match event {
         InputEvent::Mouse(m) => match m {
             MouseEvent::MoveRel { dx, dy, .. } => Ok(vec![make_mouse_input(
-                *dx as i32, *dy as i32, 0, MOUSEEVENTF_MOVE,
+                *dx as i32,
+                *dy as i32,
+                0,
+                MOUSEEVENTF_MOVE,
             )]),
             MouseEvent::MoveAbs { x_norm, y_norm, .. } => Ok(vec![make_mouse_input(
                 *x_norm as i32,
@@ -899,7 +927,14 @@ fn build_inputs(event: &InputEvent) -> AgentResult<Vec<INPUT>> {
         },
         InputEvent::Keyboard(kb) => {
             let (vk, flags) = keycode_to_vk_flags(&kb.key, kb.state);
-            Ok(vec![make_keyboard_input(vk, 0, flags)])
+            // SAFETY: MapVirtualKeyW converts VirtualKey to hardware scancode for full application compatibility
+            let scan = unsafe {
+                MapVirtualKeyW(
+                    vk.0 as u32,
+                    windows::Win32::UI::Input::KeyboardAndMouse::MAP_VIRTUAL_KEY_TYPE(0),
+                ) as u16
+            };
+            Ok(vec![make_keyboard_input(vk, scan, flags)])
         }
     }
 }
@@ -980,6 +1015,17 @@ pub fn keycode_to_vk_flags(key: &KeyCode, state: ElementState) -> (VIRTUAL_KEY, 
             ' ' => (0x20, false),
             '\n' | '\r' => (0x0D, false),
             '\t' => (0x09, false),
+            ';' | ':' => (0xBA, false),
+            '=' | '+' => (0xBB, false),
+            ',' | '<' => (0xBC, false),
+            '-' | '_' => (0xBD, false),
+            '.' | '>' => (0xBE, false),
+            '/' | '?' => (0xBF, false),
+            '`' | '~' => (0xC0, false),
+            '[' | '{' => (0xDB, false),
+            '\\' | '|' => (0xDC, false),
+            ']' | '}' => (0xDD, false),
+            '\'' | '"' => (0xDE, false),
             _ => (*c as u16, false),
         },
         KeyCode::Other(code) => (*code as u16, false),

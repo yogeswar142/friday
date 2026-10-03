@@ -1000,30 +1000,82 @@ pub fn set_device_input_preferences(
     device_id: String,
     share_mouse: bool,
     share_keyboard: bool,
+    share_clipboard: Option<bool>,
     state: State<'_, SharedAppState>,
 ) -> Result<DeviceInfo, String> {
     let mut app = state.lock().unwrap();
-    if let Some(dev) = app
-        .devices
-        .iter_mut()
-        .find(|d| d.id == device_id || d.ip_address == device_id)
-    {
-        dev.share_mouse = share_mouse;
-        dev.share_keyboard = share_keyboard;
-        let updated = dev.clone();
+    let updated = {
+        if let Some(dev) = app
+            .devices
+            .iter_mut()
+            .find(|d| d.id == device_id || d.ip_address == device_id)
+        {
+            dev.share_mouse = share_mouse;
+            dev.share_keyboard = share_keyboard;
+            if let Some(sc) = share_clipboard {
+                dev.share_clipboard = sc;
+            }
+            Some(dev.clone())
+        } else {
+            None
+        }
+    };
+
+    if let Some(updated) = updated {
         let name = updated.name.clone();
+        let share_clip = updated.share_clipboard;
         app.add_log(
             "INFO",
             "friday_core::input",
             &format!(
-                "Updated input preferences for {}: mouse={}, keyboard={}",
-                name, share_mouse, share_keyboard
+                "Updated input preferences for {}: mouse={}, keyboard={}, clipboard={}",
+                name, share_mouse, share_keyboard, share_clip
             ),
         );
         app.persist_config();
         Ok(updated)
     } else {
         Err(format!("Device {} not found", device_id))
+    }
+}
+
+#[tauri::command]
+pub fn set_host_input_preferences(
+    share_mouse: bool,
+    share_keyboard: bool,
+    share_clipboard: bool,
+    state: State<'_, SharedAppState>,
+) -> Result<DeviceInfo, String> {
+    let mut app = state.lock().unwrap();
+    let updated = {
+        let local_id = app.local_device_id.clone();
+        if let Some(dev) = app
+            .devices
+            .iter_mut()
+            .find(|d| d.is_local || d.id == local_id)
+        {
+            dev.share_mouse = share_mouse;
+            dev.share_keyboard = share_keyboard;
+            dev.share_clipboard = share_clipboard;
+            Some(dev.clone())
+        } else {
+            None
+        }
+    };
+
+    if let Some(updated) = updated {
+        app.add_log(
+            "INFO",
+            "friday_core::input",
+            &format!(
+                "Updated Main Host sharing preferences: mouse={}, keyboard={}, clipboard={}",
+                share_mouse, share_keyboard, share_clipboard
+            ),
+        );
+        app.persist_config();
+        Ok(updated)
+    } else {
+        Err("Local host device not found".into())
     }
 }
 

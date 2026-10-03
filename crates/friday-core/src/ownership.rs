@@ -101,7 +101,11 @@ impl ExclusiveOwnershipRouter {
     }
 
     /// Configure per-device permissions. Call once per known device at session setup.
-    pub fn set_device_permissions(&mut self, device_id: impl Into<String>, perms: DevicePermissions) {
+    pub fn set_device_permissions(
+        &mut self,
+        device_id: impl Into<String>,
+        perms: DevicePermissions,
+    ) {
         self.device_permissions.insert(device_id.into(), perms);
     }
 
@@ -112,7 +116,6 @@ impl ExclusiveOwnershipRouter {
             .cloned()
             .unwrap_or_else(DevicePermissions::full)
     }
-
 
     pub fn from_screen_topology(
         local_device_id: impl Into<String>,
@@ -1436,7 +1439,9 @@ mod tests {
             router.held_input.record_key(key, ElementState::Pressed);
         }
         // Hold left mouse button
-        router.held_input.record_mouse_button(MouseButton::Left, ElementState::Pressed);
+        router
+            .held_input
+            .record_mouse_button(MouseButton::Left, ElementState::Pressed);
 
         assert_eq!(router.held_input.held_keys.len(), 4);
         assert_eq!(router.held_input.held_mouse_buttons.len(), 1);
@@ -1474,7 +1479,10 @@ mod tests {
                 }))
             )
         });
-        assert!(has_btn_release, "Button release must be in handoff decisions");
+        assert!(
+            has_btn_release,
+            "Button release must be in handoff decisions"
+        );
     }
 
     /// REQ-5b: Held keys are all released on emergency escape / disconnect.
@@ -1487,18 +1495,30 @@ mod tests {
         for key in [KeyCode::LeftShift, KeyCode::LeftControl, KeyCode::Z] {
             router.held_input.record_key(key, ElementState::Pressed);
         }
-        router.held_input.record_mouse_button(MouseButton::Right, ElementState::Pressed);
+        router
+            .held_input
+            .record_mouse_button(MouseButton::Right, ElementState::Pressed);
 
         let decisions = router.force_restore_local_ownership(999);
 
         // Must be back on local
         assert_eq!(router.active_device_id(), "G50");
-        assert!(router.held_input.held_mouse_buttons.is_empty(), "No stuck buttons after escape");
-        assert!(router.held_input.held_keys.is_empty(), "No stuck keys after escape");
+        assert!(
+            router.held_input.held_mouse_buttons.is_empty(),
+            "No stuck buttons after escape"
+        );
+        assert!(
+            router.held_input.held_keys.is_empty(),
+            "No stuck keys after escape"
+        );
 
         // Releases must be in both Remote (Yoga) and Local (G50) decisions
-        let has_remote_release = decisions.iter().any(|d| matches!(d, RoutingDecision::Remote { .. }));
-        let has_local_release = decisions.iter().any(|d| matches!(d, RoutingDecision::Local(_)));
+        let has_remote_release = decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Remote { .. }));
+        let has_local_release = decisions
+            .iter()
+            .any(|d| matches!(d, RoutingDecision::Local(_)));
         assert!(has_remote_release, "Remote releases sent to Yoga");
         assert!(has_local_release, "Local releases sent to G50");
     }
@@ -1549,7 +1569,9 @@ mod tests {
         let releases = router.force_restore_local_ownership(602);
         assert_eq!(router.active_device_id(), "G50");
         assert!(
-            releases.iter().any(|d| matches!(d, RoutingDecision::Transfer(_))),
+            releases
+                .iter()
+                .any(|d| matches!(d, RoutingDecision::Transfer(_))),
             "Emergency escape (force_restore) must emit a Transfer back to G50"
         );
     }

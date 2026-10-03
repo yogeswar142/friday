@@ -33,6 +33,148 @@ static CLIENT_HELD_MIDDLE: AtomicBool = AtomicBool::new(false);
 
 pub const FRIDAY_INJECTED_MAGIC: usize = 0x46524944; // "FRID"
 
+use std::sync::atomic::AtomicU64;
+static LAST_CLIPBOARD_HASH: AtomicU64 = AtomicU64::new(0);
+
+fn simple_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(u_period: u32) -> u32;
+    fn timeEndPeriod(u_period: u32) -> u32;
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "user32")]
+extern "system" {
+    fn OpenClipboard(h_wnd_new_owner: *mut std::ffi::c_void) -> i32;
+    fn CloseClipboard() -> i32;
+    fn EmptyClipboard() -> i32;
+    fn GetClipboardData(u_format: u32) -> *mut std::ffi::c_void;
+    fn SetClipboardData(u_format: u32, h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn IsClipboardFormatAvailable(u_format: u32) -> i32;
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GlobalAlloc(u_flags: u32, dw_bytes: usize) -> *mut std::ffi::c_void;
+    fn GlobalFree(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn GlobalLock(h_mem: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
+    fn GlobalUnlock(h_mem: *mut std::ffi::c_void) -> i32;
+}
+
+pub fn get_local_clipboard_text() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: Win32 clipboard read using standard GMEM CF_UNICODETEXT
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                return None;
+            }
+            if IsClipboardFormatAvailable(13 /* CF_UNICODETEXT */) == 0 {
+                CloseClipboard();
+                return None;
+            }
+            let handle = GetClipboardData(13);
+            if handle.is_null() {
+                CloseClipboard();
+                return None;
+            }
+            let ptr = GlobalLock(handle) as *const u16;
+            if ptr.is_null() {
+                CloseClipboard();
+                return None;
+            }
+            let mut len = 0;
+            while *ptr.add(len) != 0 {
+                len += 1;
+            }
+            let slice = std::slice::from_raw_parts(ptr, len);
+            let text = String::from_utf16_lossy(slice);
+            GlobalUnlock(handle);
+            CloseClipboard();
+            Some(text)
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard", "-o"])
+            .output()
+        {
+            if output.status.success() {
+                if let Ok(s) = String::from_utf8(output.stdout) {
+                    return Some(s);
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+pub fn set_local_clipboard_text(text: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        // SAFETY: Win32 clipboard write allocating moveable memory for CF_UNICODETEXT
+        unsafe {
+            if OpenClipboard(std::ptr::null_mut()) == 0 {
+                return false;
+            }
+            EmptyClipboard();
+            let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+            let byte_count = wide.len() * std::mem::size_of::<u16>();
+            let hmem = GlobalAlloc(0x0002 /* GMEM_MOVEABLE */, byte_count);
+            if hmem.is_null() {
+                CloseClipboard();
+                return false;
+            }
+            let dest = GlobalLock(hmem) as *mut u16;
+            if dest.is_null() {
+                GlobalFree(hmem);
+                CloseClipboard();
+                return false;
+            }
+            std::ptr::copy_nonoverlapping(wide.as_ptr(), dest, wide.len());
+            GlobalUnlock(hmem);
+            let res = SetClipboardData(13 /* CF_UNICODETEXT */, hmem);
+            CloseClipboard();
+            !res.is_null()
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::io::Write;
+        if let Ok(mut child) = std::process::Command::new("xclip")
+            .args(["-selection", "clipboard", "-in"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+            return true;
+        }
+        false
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        let _ = text;
+        false
+    }
+}
+
 #[cfg(target_os = "windows")]
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, POINT, WPARAM};
 #[cfg(target_os = "windows")]
@@ -474,12 +616,29 @@ pub fn win32_vk_to_keycode(vk: u32, flags: u32) -> KeyCode {
         0xA5 => KeyCode::RightAlt,
         0x5B => KeyCode::LeftSuper,
         0x5C => KeyCode::RightSuper,
+        // OEM punctuation keys
+        0xBA => KeyCode::Char(';'),
+        0xBB => KeyCode::Char('='),
+        0xBC => KeyCode::Char(','),
+        0xBD => KeyCode::Char('-'),
+        0xBE => KeyCode::Char('.'),
+        0xBF => KeyCode::Char('/'),
+        0xC0 => KeyCode::Char('`'),
+        0xDB => KeyCode::Char('['),
+        0xDC => KeyCode::Char('\\'),
+        0xDD => KeyCode::Char(']'),
+        0xDE => KeyCode::Char('\''),
         other => KeyCode::Other(other),
     }
 }
 
 #[cfg(target_os = "windows")]
 fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
+    // Increase Windows system timer resolution to 1ms for ultra-low-latency input processing
+    unsafe {
+        timeBeginPeriod(1);
+    }
+
     // SAFETY: Low-level mouse and keyboard hooks on dedicated worker thread
     let mouse_hook = unsafe {
         SetWindowsHookExW(
@@ -508,17 +667,16 @@ fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
         );
         let mut msg = MSG::default();
         while !stop_flag.load(Ordering::Relaxed) {
-            // SAFETY: Pumping messages to keep Windows hook dispatching
+            // SAFETY: Pumping all queued Windows messages with zero delay
             unsafe {
-                if PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
-                } else {
-                    std::thread::sleep(Duration::from_millis(2));
                 }
             }
+            std::thread::sleep(Duration::from_millis(1));
         }
-        // SAFETY: Cleanup hooks upon thread exit
+        // SAFETY: Cleanup hooks and restore system timer resolution upon thread exit
         unsafe {
             if let Ok(h) = mouse_hook {
                 let _ = UnhookWindowsHookEx(h);
@@ -526,9 +684,13 @@ fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
             if let Ok(h) = kbd_hook {
                 let _ = UnhookWindowsHookEx(h);
             }
+            timeEndPeriod(1);
         }
         info!("Windows low-level hooks uninstalled");
     } else {
+        unsafe {
+            timeEndPeriod(1);
+        }
         warn!("Failed to install Windows WH_MOUSE_LL and WH_KEYBOARD_LL hooks");
     }
 }
@@ -807,6 +969,77 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
     info!("Linux X11 mouse capture thread stopped");
 }
 
+// ── Real-time Text Clipboard Synchronization ──────────────────────────────
+
+fn run_clipboard_sync_thread(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) {
+    let socket = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("Failed to bind clipboard sync socket: {}", e);
+            return;
+        }
+    };
+
+    info!("FRIDAY real-time clipboard sync thread started");
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(300));
+
+        let (is_running, is_paused, local_id, host_share_clipboard, targets) = {
+            let app = match shared_state.lock() {
+                Ok(a) => a,
+                Err(_) => continue,
+            };
+            let host_share = app
+                .devices
+                .iter()
+                .find(|d| d.is_local)
+                .map(|d| d.share_clipboard)
+                .unwrap_or(true);
+            let tgts: Vec<(String, u16)> = app
+                .devices
+                .iter()
+                .filter(|d| !d.is_local && d.is_connected && d.share_clipboard)
+                .map(|d| (d.ip_address.clone(), d.port))
+                .collect();
+            (
+                app.engine_running,
+                app.engine_paused,
+                app.local_device_id.clone(),
+                host_share,
+                tgts,
+            )
+        };
+
+        if !is_running || is_paused || !host_share_clipboard || targets.is_empty() {
+            continue;
+        }
+
+        if let Some(text) = get_local_clipboard_text() {
+            if !text.is_empty() {
+                let h = simple_hash(&text);
+                let prev_h = LAST_CLIPBOARD_HASH.load(Ordering::Relaxed);
+                if h != prev_h {
+                    LAST_CLIPBOARD_HASH.store(h, Ordering::Relaxed);
+                    let sync_msg = ControlMessage::ClipboardSync {
+                        text,
+                        origin_device_id: local_id.clone(),
+                    };
+                    if let Ok(bytes) = sync_msg.encode() {
+                        let packet = NetworkPacket::new_control(bytes);
+                        if let Ok(enc) = packet.encode() {
+                            for (ip, port) in targets {
+                                let dest = format!("{}:{}", ip, port);
+                                let _ = socket.send_to(&enc, &dest);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 // ── Background Engine Service ──────────────────────────────────────────────────
 
 pub fn start_engine_service(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) {
@@ -844,6 +1077,13 @@ pub fn start_engine_service(shared_state: SharedAppState, stop_flag: Arc<AtomicB
     std::thread::spawn(move || {
         run_mouse_router(state_track, stop_track, event_rx);
     });
+
+    // 4. Real-time Text Clipboard Synchronization Thread
+    let state_clip = shared_state.clone();
+    let stop_clip = stop_flag.clone();
+    std::thread::spawn(move || {
+        run_clipboard_sync_thread(state_clip, stop_clip);
+    });
 }
 
 // ── UDP Input & Control Receiver ───────────────────────────────────────────────
@@ -873,6 +1113,7 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
     let mut bytes_this_sec = 0u64;
     let mut client_last_move_log = Instant::now();
     let mut client_move_count = 0u32;
+    let mut is_receiver_client = false;
 
     let mut last_keepalive = Instant::now();
 
@@ -885,11 +1126,14 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                 if let Ok(packet) = NetworkPacket::decode(&buf[..len]) {
                     match packet.payload {
                         PacketPayload::Input(event) => {
-                            if let Ok(mut app) = shared_state.lock() {
-                                if app.is_host {
-                                    app.is_host = false;
-                                    app.persist_config();
+                            if !is_receiver_client {
+                                if let Ok(mut app) = shared_state.lock() {
+                                    if app.is_host {
+                                        app.is_host = false;
+                                        app.persist_config();
+                                    }
                                 }
+                                is_receiver_client = true;
                             }
                             // Only inject into OS if we are NOT currently controlling remote
                             if !IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) {
@@ -918,22 +1162,16 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                             }
                                             _ => {}
                                         }
-                                        if let Ok(mut app) = shared_state.lock() {
-                                            app.add_log(
-                                                "INFO",
-                                                "friday_core::mouse",
-                                                &format!("Client injected mouse button {:?} {:?} from Host ({})", button, state, src),
-                                            );
-                                        }
+                                        debug!(
+                                            "Client injected mouse button {:?} {:?} from Host ({})",
+                                            button, state, src
+                                        );
                                     }
                                     InputEvent::Mouse(MouseEvent::Scroll { dx, dy, .. }) => {
-                                        if let Ok(mut app) = shared_state.lock() {
-                                            app.add_log(
-                                                "INFO",
-                                                "friday_core::mouse",
-                                                &format!("Client injected scroll (dx: {}, dy: {}) from Host ({})", dx, dy, src),
-                                            );
-                                        }
+                                        debug!(
+                                            "Client injected scroll (dx: {}, dy: {}) from Host ({})",
+                                            dx, dy, src
+                                        );
                                     }
                                     InputEvent::Mouse(MouseEvent::MoveRel { .. }) => {
                                         client_move_count += 1;
@@ -941,13 +1179,10 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
                                             >= Duration::from_millis(1000)
                                         {
                                             if let Some((cx, cy)) = get_local_cursor_pos() {
-                                                if let Ok(mut app) = shared_state.lock() {
-                                                    app.add_log(
-                                                        "INFO",
-                                                        "friday_core::mouse",
-                                                        &format!("Client active: injected {} mouse moves from Host ({}) | cursor at ({}, {})", client_move_count, src, cx, cy),
-                                                    );
-                                                }
+                                                debug!(
+                                                    "Client active: injected {} mouse moves from Host ({}) | cursor at ({}, {})",
+                                                    client_move_count, src, cx, cy
+                                                );
                                             }
                                             client_move_count = 0;
                                             client_last_move_log = Instant::now();
@@ -1192,6 +1427,41 @@ fn handle_incoming_control(
                         .find(|d| d.ip_address == src.ip().to_string())
                     {
                         dev.is_connected = false;
+                    }
+                }
+            }
+            ControlMessage::ClipboardSync {
+                text,
+                origin_device_id,
+            } => {
+                let (is_local, allow_clipboard) = {
+                    let app = shared_state.lock().unwrap();
+                    let loc = origin_device_id == app.local_device_id;
+                    let local_share = app
+                        .devices
+                        .iter()
+                        .find(|d| d.is_local)
+                        .map(|d| d.share_clipboard)
+                        .unwrap_or(true);
+                    let sender_share = app
+                        .devices
+                        .iter()
+                        .find(|d| d.id == origin_device_id)
+                        .map(|d| d.share_clipboard)
+                        .unwrap_or(true);
+                    (loc, local_share && sender_share)
+                };
+
+                // Loop prevention: ignore if origin was this local machine
+                if !is_local && allow_clipboard {
+                    let h = simple_hash(&text);
+                    LAST_CLIPBOARD_HASH.store(h, Ordering::Relaxed);
+                    if set_local_clipboard_text(&text) {
+                        info!(
+                            "Synchronized clipboard text ({} chars) from origin {}",
+                            text.len(),
+                            origin_device_id
+                        );
                     }
                 }
             }
@@ -1459,8 +1729,12 @@ fn run_mouse_router(
                                             app.persist_config();
                                         }
 
-                                        FREEZE_CURSOR_X.store(cur_x, Ordering::Relaxed);
-                                        FREEZE_CURSOR_Y.store(cur_y, Ordering::Relaxed);
+                                        let (sw, sh) = get_screen_dimensions();
+                                        let center_x = sw / 2;
+                                        let center_y = sh / 2;
+                                        set_local_cursor_pos(center_x, center_y);
+                                        FREEZE_CURSOR_X.store(center_x, Ordering::Relaxed);
+                                        FREEZE_CURSOR_Y.store(center_y, Ordering::Relaxed);
                                         IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
                                         HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
                                         dwell_start = None;
@@ -1481,6 +1755,15 @@ fn run_mouse_router(
         }
         // ── Case 2: Physical mouse is captured locally, driving active remote device ──
         else if is_controlling {
+            let (host_share_mouse, host_share_keyboard, _host_share_clipboard) = {
+                let app = shared_state.lock().unwrap();
+                app.devices
+                    .iter()
+                    .find(|d| d.is_local || d.id == app.local_device_id)
+                    .map(|d| (d.share_mouse, d.share_keyboard, d.share_clipboard))
+                    .unwrap_or((true, true, true))
+            };
+
             let (target_share_mouse, target_share_keyboard) = {
                 connected_peers
                     .iter()
@@ -1489,6 +1772,12 @@ fn run_mouse_router(
                     .unwrap_or((true, true))
             };
 
+            let allow_mouse = host_share_mouse && target_share_mouse;
+            let allow_keyboard = host_share_keyboard && target_share_keyboard;
+
+            let target_addr: Option<SocketAddr> =
+                format!("{}:{}", target_ip, target_port).parse().ok();
+
             // Heartbeat Keepalive: ping target every 500ms so receiver never drops out during inactivity
             if last_heartbeat_ping.elapsed() >= Duration::from_millis(500) {
                 last_heartbeat_ping = Instant::now();
@@ -1496,8 +1785,9 @@ fn run_mouse_router(
                 if let Ok(bytes) = ping.encode() {
                     let packet = NetworkPacket::new_control(bytes);
                     if let Ok(enc) = packet.encode() {
-                        let dest = format!("{}:{}", target_ip, target_port);
-                        let _ = send_socket.send_to(&enc, &dest);
+                        if let Some(addr) = target_addr {
+                            let _ = send_socket.send_to(&enc, addr);
+                        }
                     }
                 }
             }
@@ -1511,7 +1801,7 @@ fn run_mouse_router(
 
                 let should_forward = match &evt {
                     InputEvent::Mouse(m) => {
-                        if !target_share_mouse {
+                        if !allow_mouse {
                             false
                         } else {
                             if let MouseEvent::Button { button, state, .. } = m {
@@ -1521,20 +1811,17 @@ fn run_mouse_router(
                         }
                     }
                     InputEvent::Keyboard(k) => {
-                        if !target_share_keyboard {
+                        if !allow_keyboard {
+                            // If keyboard is disabled on active target, drop with NO fallback
+                            // and ensure any held keys are cleared from tracking
+                            held_inputs.record_key(k.key.clone(), ElementState::Released);
                             false
                         } else {
                             held_inputs.record_key(k.key.clone(), k.state);
-                            if let Ok(mut app) = shared_state.lock() {
-                                app.add_log(
-                                    "INFO",
-                                    "friday_core::keyboard",
-                                    &format!(
-                                        "Host forwarded key {:?} {:?} to {}",
-                                        k.key, k.state, current_target_device_id
-                                    ),
-                                );
-                            }
+                            debug!(
+                                "Host forwarded key {:?} {:?} to {}",
+                                k.key, k.state, current_target_device_id
+                            );
                             true
                         }
                     }
@@ -1568,28 +1855,16 @@ fn run_mouse_router(
                         }
                     }
                     InputEvent::Mouse(MouseEvent::Button { button, state, .. }) => {
-                        if let Ok(mut app) = shared_state.lock() {
-                            app.add_log(
-                                "INFO",
-                                "friday_core::mouse",
-                                &format!(
-                                    "Host forwarded mouse button {:?} {:?} to {}",
-                                    button, state, current_target_device_id
-                                ),
-                            );
-                        }
+                        debug!(
+                            "Host forwarded mouse button {:?} {:?} to {}",
+                            button, state, current_target_device_id
+                        );
                     }
                     InputEvent::Mouse(MouseEvent::Scroll { dx, dy, .. }) => {
-                        if let Ok(mut app) = shared_state.lock() {
-                            app.add_log(
-                                "INFO",
-                                "friday_core::mouse",
-                                &format!(
-                                    "Host forwarded mouse scroll (dx: {}, dy: {}) to {}",
-                                    dx, dy, current_target_device_id
-                                ),
-                            );
-                        }
+                        debug!(
+                            "Host forwarded mouse scroll (dx: {}, dy: {}) to {}",
+                            dx, dy, current_target_device_id
+                        );
                     }
                     _ => {}
                 }
@@ -1869,8 +2144,12 @@ fn run_mouse_router(
                 if should_forward {
                     let packet = NetworkPacket::new_input(evt, seq);
                     if let Ok(enc) = packet.encode() {
-                        let dest = format!("{}:{}", target_ip, target_port);
-                        let _ = send_socket.send_to(&enc, &dest);
+                        if let Some(addr) = target_addr {
+                            let _ = send_socket.send_to(&enc, addr);
+                        } else {
+                            let dest = format!("{}:{}", target_ip, target_port);
+                            let _ = send_socket.send_to(&enc, &dest);
+                        }
                     }
                 }
             }

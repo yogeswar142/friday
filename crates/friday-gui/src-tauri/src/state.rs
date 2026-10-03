@@ -102,11 +102,13 @@ impl AppState {
                 "mouse_capture".into(),
                 "mouse_injection".into(),
                 "edge_detection".into(),
+                "clipboard".into(),
             ],
             connection_state: "Connected".into(),
             trust_state: "Trusted".into(),
             share_mouse: true,
             share_keyboard: true,
+            share_clipboard: true,
         };
 
         let mut devices = vec![local_device];
@@ -139,11 +141,13 @@ impl AppState {
                         "mouse_capture".into(),
                         "mouse_injection".into(),
                         "edge_detection".into(),
+                        "clipboard".into(),
                     ],
                     connection_state: "Connected".into(),
                     trust_state: "Trusted".into(),
                     share_mouse: true,
                     share_keyboard: true,
+                    share_clipboard: true,
                 });
             }
         }

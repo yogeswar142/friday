@@ -481,11 +481,12 @@ export const api = {
       targetId,
       target_id: targetId,
     }),
-  /** Update mouse and keyboard sharing preferences for a specific device */
+  /** Update mouse, keyboard, and clipboard sharing preferences for a specific device */
   setDeviceInputPreferences: (
     deviceId: string,
     shareMouse: boolean,
-    shareKeyboard: boolean
+    shareKeyboard: boolean,
+    shareClipboard?: boolean
   ) =>
     invokeTauri<DeviceInfo>("set_device_input_preferences", {
       deviceId,
@@ -494,5 +495,21 @@ export const api = {
       share_mouse: shareMouse,
       shareKeyboard,
       share_keyboard: shareKeyboard,
+      shareClipboard: shareClipboard ?? true,
+      share_clipboard: shareClipboard ?? true,
+    }),
+  /** Update Main Host mouse, keyboard, and clipboard sharing preferences */
+  setHostInputPreferences: (
+    shareMouse: boolean,
+    shareKeyboard: boolean,
+    shareClipboard: boolean
+  ) =>
+    invokeTauri<DeviceInfo>("set_host_input_preferences", {
+      shareMouse,
+      share_mouse: shareMouse,
+      shareKeyboard,
+      share_keyboard: shareKeyboard,
+      shareClipboard,
+      share_clipboard: shareClipboard,
     }),
 };

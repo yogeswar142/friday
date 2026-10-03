@@ -17,7 +17,9 @@ use std::sync::{
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 
-use friday_core::{DisplayBounds, ElementState, InputEvent, MouseButton, MouseEvent};
+use friday_core::{
+    DisplayBounds, ElementState, InputEvent, KeyCode, KeyboardEvent, MouseButton, MouseEvent,
+};
 
 use crate::control::{EdgeTrigger, ScreenEdge};
 use crate::error::{AgentError, Result as AgentResult};
@@ -206,6 +208,104 @@ pub fn inject_scroll(dx: i16, dy: i16) -> AgentResult<()> {
     })
 }
 
+/// Map FRIDAY KeyCode to standard X11 KeySym
+pub fn keycode_to_x11_keysym(key: &KeyCode) -> u32 {
+    match key {
+        KeyCode::Key0 => 0x0030,
+        KeyCode::Key1 => 0x0031,
+        KeyCode::Key2 => 0x0032,
+        KeyCode::Key3 => 0x0033,
+        KeyCode::Key4 => 0x0034,
+        KeyCode::Key5 => 0x0035,
+        KeyCode::Key6 => 0x0036,
+        KeyCode::Key7 => 0x0037,
+        KeyCode::Key8 => 0x0038,
+        KeyCode::Key9 => 0x0039,
+        KeyCode::A => 0x0061,
+        KeyCode::B => 0x0062,
+        KeyCode::C => 0x0063,
+        KeyCode::D => 0x0064,
+        KeyCode::E => 0x0065,
+        KeyCode::F => 0x0066,
+        KeyCode::G => 0x0067,
+        KeyCode::H => 0x0068,
+        KeyCode::I => 0x0069,
+        KeyCode::J => 0x006a,
+        KeyCode::K => 0x006b,
+        KeyCode::L => 0x006c,
+        KeyCode::M => 0x006d,
+        KeyCode::N => 0x006e,
+        KeyCode::O => 0x006f,
+        KeyCode::P => 0x0070,
+        KeyCode::Q => 0x0071,
+        KeyCode::R => 0x0072,
+        KeyCode::S => 0x0073,
+        KeyCode::T => 0x0074,
+        KeyCode::U => 0x0075,
+        KeyCode::V => 0x0076,
+        KeyCode::W => 0x0077,
+        KeyCode::X => 0x0078,
+        KeyCode::Y => 0x0079,
+        KeyCode::Z => 0x007a,
+        KeyCode::F1 => 0xffbe,
+        KeyCode::F2 => 0xffbf,
+        KeyCode::F3 => 0xffc0,
+        KeyCode::F4 => 0xffc1,
+        KeyCode::F5 => 0xffc2,
+        KeyCode::F6 => 0xffc3,
+        KeyCode::F7 => 0xffc4,
+        KeyCode::F8 => 0xffc5,
+        KeyCode::F9 => 0xffc6,
+        KeyCode::F10 => 0xffc7,
+        KeyCode::F11 => 0xffc8,
+        KeyCode::F12 => 0xffc9,
+        KeyCode::Backspace => 0xff08,
+        KeyCode::Tab => 0xff09,
+        KeyCode::Enter => 0xff0d,
+        KeyCode::CapsLock => 0xffe5,
+        KeyCode::Escape => 0xff1b,
+        KeyCode::Space => 0x0020,
+        KeyCode::Left => 0xff51,
+        KeyCode::Up => 0xff52,
+        KeyCode::Right => 0xff53,
+        KeyCode::Down => 0xff54,
+        KeyCode::LeftShift => 0xffe1,
+        KeyCode::RightShift => 0xffe2,
+        KeyCode::LeftControl => 0xffe3,
+        KeyCode::RightControl => 0xffe4,
+        KeyCode::LeftAlt => 0xffe9,
+        KeyCode::RightAlt => 0xffea,
+        KeyCode::LeftSuper => 0xffeb,
+        KeyCode::RightSuper => 0xffec,
+        KeyCode::Char(c) => *c as u32,
+        KeyCode::Other(code) => *code,
+    }
+}
+
+/// Inject a keyboard event into the local X11 display using XTest
+pub fn inject_keyboard(kb: &KeyboardEvent) -> AgentResult<()> {
+    with_display(|display| {
+        let keysym = keycode_to_x11_keysym(&kb.key);
+        if keysym > 0 {
+            // SAFETY: XKeysymToKeycode converts standard X11 KeySym to physical keycode
+            let keycode = unsafe { x11::xlib::XKeysymToKeycode(display, keysym as u64) };
+            if keycode > 0 {
+                // SAFETY: XTestFakeKeyEvent simulates hardware keypress or release
+                unsafe {
+                    x11::xtest::XTestFakeKeyEvent(
+                        display,
+                        keycode as u32,
+                        (kb.state == ElementState::Pressed) as i32,
+                        0,
+                    );
+                    x11::xlib::XFlush(display);
+                }
+            }
+        }
+        Ok(())
+    })
+}
+
 /// Inject any InputEvent received from network into the local X display
 pub fn inject_event(event: &InputEvent) -> AgentResult<()> {
     match event {
@@ -223,10 +323,7 @@ pub fn inject_event(event: &InputEvent) -> AgentResult<()> {
             }
             MouseEvent::Scroll { dx, dy, .. } => inject_scroll(*dx, *dy),
         },
-        InputEvent::Keyboard(_) => {
-            // Phase 1 only: keyboard not yet injected
-            Ok(())
-        }
+        InputEvent::Keyboard(kb) => inject_keyboard(kb),
     }
 }
 
