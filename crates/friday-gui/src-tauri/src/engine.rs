@@ -653,6 +653,80 @@ pub fn win32_vk_to_keycode(vk: u32, flags: u32) -> KeyCode {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn x11_keysym_to_keycode(keysym: u32) -> KeyCode {
+    match keysym {
+        0x0030 => KeyCode::Key0,
+        0x0031 => KeyCode::Key1,
+        0x0032 => KeyCode::Key2,
+        0x0033 => KeyCode::Key3,
+        0x0034 => KeyCode::Key4,
+        0x0035 => KeyCode::Key5,
+        0x0036 => KeyCode::Key6,
+        0x0037 => KeyCode::Key7,
+        0x0038 => KeyCode::Key8,
+        0x0039 => KeyCode::Key9,
+        0x0061 | 0x0041 => KeyCode::A,
+        0x0062 | 0x0042 => KeyCode::B,
+        0x0063 | 0x0043 => KeyCode::C,
+        0x0064 | 0x0044 => KeyCode::D,
+        0x0065 | 0x0045 => KeyCode::E,
+        0x0066 | 0x0046 => KeyCode::F,
+        0x0067 | 0x0047 => KeyCode::G,
+        0x0068 | 0x0048 => KeyCode::H,
+        0x0069 | 0x0049 => KeyCode::I,
+        0x006a | 0x004a => KeyCode::J,
+        0x006b | 0x004b => KeyCode::K,
+        0x006c | 0x004c => KeyCode::L,
+        0x006d | 0x004d => KeyCode::M,
+        0x006e | 0x004e => KeyCode::N,
+        0x006f | 0x004f => KeyCode::O,
+        0x0070 | 0x0050 => KeyCode::P,
+        0x0071 | 0x0051 => KeyCode::Q,
+        0x0072 | 0x0052 => KeyCode::R,
+        0x0073 | 0x0053 => KeyCode::S,
+        0x0074 | 0x0054 => KeyCode::T,
+        0x0075 | 0x0055 => KeyCode::U,
+        0x0076 | 0x0056 => KeyCode::V,
+        0x0077 | 0x0057 => KeyCode::W,
+        0x0078 | 0x0058 => KeyCode::X,
+        0x0079 | 0x0059 => KeyCode::Y,
+        0x007a | 0x005a => KeyCode::Z,
+        0xffbe => KeyCode::F1,
+        0xffbf => KeyCode::F2,
+        0xffc0 => KeyCode::F3,
+        0xffc1 => KeyCode::F4,
+        0xffc2 => KeyCode::F5,
+        0xffc3 => KeyCode::F6,
+        0xffc4 => KeyCode::F7,
+        0xffc5 => KeyCode::F8,
+        0xffc6 => KeyCode::F9,
+        0xffc7 => KeyCode::F10,
+        0xffc8 => KeyCode::F11,
+        0xffc9 => KeyCode::F12,
+        0xff08 => KeyCode::Backspace,
+        0xff09 => KeyCode::Tab,
+        0xff0d => KeyCode::Enter,
+        0xffe5 => KeyCode::CapsLock,
+        0xff1b => KeyCode::Escape,
+        0x0020 => KeyCode::Space,
+        0xff51 => KeyCode::Left,
+        0xff52 => KeyCode::Up,
+        0xff53 => KeyCode::Right,
+        0xff54 => KeyCode::Down,
+        0xffe1 => KeyCode::LeftShift,
+        0xffe2 => KeyCode::RightShift,
+        0xffe3 => KeyCode::LeftControl,
+        0xffe4 => KeyCode::RightControl,
+        0xffe9 => KeyCode::LeftAlt,
+        0xffea => KeyCode::RightAlt,
+        0xffeb => KeyCode::LeftSuper,
+        0xffec => KeyCode::RightSuper,
+        0x0020..=0x007e => KeyCode::Char((keysym as u8) as char),
+        other => KeyCode::Other(other),
+    }
+}
+
 #[cfg(target_os = "windows")]
 fn run_windows_hook_thread(stop_flag: Arc<AtomicBool>) {
     // Increase Windows system timer resolution to 1ms for ultra-low-latency input processing
@@ -805,6 +879,21 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
                     warn!("Linux X11 XGrabPointer failed after 10 attempts");
                 }
 
+                // 3b. Grab keyboard so keystrokes on Linux Host route exclusively to active remote machine
+                let kbd_status = x11::xlib::XGrabKeyboard(
+                    display,
+                    root,
+                    0, // owner_events = False
+                    x11::xlib::GrabModeAsync,
+                    x11::xlib::GrabModeAsync,
+                    x11::xlib::CurrentTime,
+                );
+                if kbd_status == x11::xlib::GrabSuccess {
+                    debug!("Linux X11 keyboard successfully grabbed for remote routing");
+                } else {
+                    warn!("Linux X11 XGrabKeyboard status: {}", kbd_status);
+                }
+
                 // 4. Drain all pending events generated during the transition (including warp to center)
                 x11::xlib::XFlush(display);
                 while x11::xlib::XPending(display) > 0 {
@@ -819,8 +908,9 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
         } else if !is_controlling && was_controlling {
             // ── State Transition: Remote -> Returned to Local Host ──
             unsafe {
-                // 1. Release pointer grab
+                // 1. Release pointer and keyboard grabs
                 x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+                x11::xlib::XUngrabKeyboard(display, x11::xlib::CurrentTime);
 
                 // 2. Restore cursor to the freeze / return position
                 let fx = FREEZE_CURSOR_X.load(Ordering::Relaxed);
@@ -968,6 +1058,30 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
                                 }
                             }
                         }
+                        x11::xlib::KeyPress => {
+                            let keycode = event.key.keycode;
+                            let keysym = x11::xlib::XKeycodeToKeysym(display, keycode as u8, 0);
+                            let friday_key = x11_keysym_to_keycode(keysym as u32);
+                            if let Some(tx) = HOOK_EVENT_TX.get() {
+                                let _ = tx.send(InputEvent::Keyboard(KeyboardEvent {
+                                    key: friday_key,
+                                    state: ElementState::Pressed,
+                                    timestamp: 0,
+                                }));
+                            }
+                        }
+                        x11::xlib::KeyRelease => {
+                            let keycode = event.key.keycode;
+                            let keysym = x11::xlib::XKeycodeToKeysym(display, keycode as u8, 0);
+                            let friday_key = x11_keysym_to_keycode(keysym as u32);
+                            if let Some(tx) = HOOK_EVENT_TX.get() {
+                                let _ = tx.send(InputEvent::Keyboard(KeyboardEvent {
+                                    key: friday_key,
+                                    state: ElementState::Released,
+                                    timestamp: 0,
+                                }));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -981,6 +1095,7 @@ fn run_linux_hook_thread(stop_flag: Arc<AtomicBool>) {
     unsafe {
         if was_controlling {
             x11::xlib::XUngrabPointer(display, x11::xlib::CurrentTime);
+            x11::xlib::XUngrabKeyboard(display, x11::xlib::CurrentTime);
             x11::xfixes::XFixesShowCursor(display, root);
             x11::xlib::XFlush(display);
         }
