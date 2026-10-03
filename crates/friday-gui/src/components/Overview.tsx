@@ -13,7 +13,7 @@ import {
   ShieldCheck,
   Zap,
 } from "lucide-react";
-import { DeviceInfo, EngineStatus, PlatformPermissions, TelemetryDto } from "../types";
+import { DeviceInfo, EngineStatus, LocalDeviceDto, PlatformPermissions, TelemetryDto } from "../types";
 
 interface OverviewProps {
   status: EngineStatus | null;
@@ -21,6 +21,7 @@ interface OverviewProps {
   devices: DeviceInfo[];
   permissions: PlatformPermissions | null;
   ring: string[];
+  localDevice?: LocalDeviceDto | null;
   onNavigateTab: (tab: "devices" | "topology" | "diagnostics" | "settings") => void;
   onSwitchOwner: (id: string) => void;
   onRefresh: () => void;
@@ -32,6 +33,7 @@ export const Overview: React.FC<OverviewProps> = ({
   devices,
   permissions,
   ring,
+  localDevice,
   onNavigateTab,
   onSwitchOwner,
   onRefresh,
@@ -110,12 +112,16 @@ export const Overview: React.FC<OverviewProps> = ({
               {status?.is_host ? "HOST CONTROLLER" : "CLIENT SCREEN"}
             </span>
           </div>
-          <div className="metric-value">{status?.active_device_id || "None"}</div>
+          <div className="metric-value">
+            {devices.find((d) => d.id === status?.active_device_id)?.name ||
+              (localDevice && status?.active_device_id === localDevice.device_id ? localDevice.display_name : status?.active_device_id) ||
+              "None"}
+          </div>
           <div className="metric-sub">
             {status?.is_host
-              ? (status?.active_device_id === status?.local_device_id
+              ? (status?.active_device_id === status?.local_device_id || (localDevice && status?.active_device_id === localDevice.device_id)
                   ? "Physical mouse active locally on Host"
-                  : `Physical mouse controlling remote screen: ${status?.active_device_id}`)
+                  : `Physical mouse controlling: ${devices.find((d) => d.id === status?.active_device_id)?.name || status?.active_device_id}`)
               : (status?.active_device_id === status?.local_device_id
                   ? "Host mouse is currently active on this screen"
                   : "Host mouse is on another screen")}
@@ -187,6 +193,7 @@ export const Overview: React.FC<OverviewProps> = ({
           >
             {ring.map((nodeId, idx) => {
               const dev = devices.find((d) => d.id === nodeId);
+              const displayName = dev ? dev.name : (localDevice && nodeId === localDevice.device_id ? localDevice.display_name : nodeId);
               const isActive = nodeId === status?.active_device_id;
               return (
                 <React.Fragment key={nodeId}>
@@ -208,7 +215,7 @@ export const Overview: React.FC<OverviewProps> = ({
                     title="Click to manually assign active mouse ownership"
                   >
                     <Laptop size={18} color={isActive ? "#10b981" : "#94a3b8"} />
-                    <span style={{ fontWeight: 600, fontSize: "13px" }}>{nodeId}</span>
+                    <span style={{ fontWeight: 600, fontSize: "13px" }}>{displayName}</span>
                     <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
                       {dev ? dev.os : "Connected"}
                     </span>
@@ -293,7 +300,7 @@ export const Overview: React.FC<OverviewProps> = ({
                   <div>
                     <div style={{ fontWeight: 600, fontSize: "13px" }}>{d.name}</div>
                     <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
-                      {d.os} ({d.arch}) • {d.ip_address}
+                      {d.os} • {d.is_local ? "Main Host" : (d.connection_state || (d.is_connected ? "Connected" : "Disconnected"))}
                     </div>
                   </div>
                 </div>

@@ -105,15 +105,10 @@ pub fn start_discovery_service(state: SharedAppState, stop_flag: Arc<AtomicBool>
                                 app.discovered_devices.iter().any(|d| d.id == peer_id);
 
                             if !already_paired && !already_discovered {
-                                app.discovered_devices.push(DiscoveredDevice {
-                                    id: peer_id,
-                                    name: peer_name,
-                                    os: peer_os,
-                                    arch: peer_arch,
-                                    ip_address: peer_ip,
-                                    port: peer_port,
-                                    is_paired: false,
-                                });
+                                app.discovered_devices.push(DiscoveredDevice::new(
+                                    peer_id, peer_name, peer_os, peer_arch, peer_ip, peer_port,
+                                    false,
+                                ));
                             }
                         }
                     }
@@ -199,15 +194,9 @@ pub fn scan_local_subnet(state: SharedAppState) -> Vec<DiscoveredDevice> {
                     let peer_ip = src.ip().to_string();
 
                     if !found.iter().any(|d: &DiscoveredDevice| d.id == peer_id) {
-                        found.push(DiscoveredDevice {
-                            id: peer_id,
-                            name: peer_name,
-                            os: peer_os,
-                            arch: peer_arch,
-                            ip_address: peer_ip,
-                            port: peer_port,
-                            is_paired: false,
-                        });
+                        found.push(DiscoveredDevice::new(
+                            peer_id, peer_name, peer_os, peer_arch, peer_ip, peer_port, false,
+                        ));
                     }
                 }
             }

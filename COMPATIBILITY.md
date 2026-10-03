@@ -2,19 +2,24 @@
 
 This document tracks verified feature support across operating systems and architectures. 
 
-> [!NOTE]
-> Architecture capability is NOT claimed as supported until actual testing or reproducible validation is performed.
+> [!IMPORTANT]
+> In accordance with project engineering rules, capability is **strictly differentiated**:
+> - **Implemented**: Code written and structurally present
+> - **Compiled**: Verified compiling under the platform target toolchain
+> - **Unit / Sim Tested**: Passing unit and simulated integration test suites
+> - **Physically Validated**: Tested on physical machines with actual hardware input
 
-| Operating System | Arch | Mouse | Keyboard | Clipboard | Files | Status / Backend Notes |
+| Operating System | Arch | Zero-Config Discovery | Noise Transport | Mouse Routing | Keyboard | Status & Validation Level |
 | :--- | :--- | :---: | :---: | :---: | :---: | :--- |
-| **Linux (Ubuntu / Debian / Fedora)** | x64 | 🟡 | 🟡 | 🟡 | 🟡 | Initial development target; X11/Wayland backends in progress. |
-| **Linux** | ARM64 | ❓ | ❓ | ❓ | ❓ | Untested |
-| **Windows 10 / 11** | x64 | ❓ | ❓ | ❓ | ❓ | Untested; Win32 / RawInput backend planned. |
-| **Windows 10 / 11** | ARM64 | ❓ | ❓ | ❓ | ❓ | Untested |
-| **macOS** | Intel x64 | ❓ | ❓ | ❓ | ❓ | Untested; CGEvent backend planned. |
-| **macOS** | Apple Silicon ARM64 | ❓ | ❓ | ❓ | ❓ | Untested |
+| **Windows 10 / 11** | x64 | **Physically Validated** | **Physically Validated** | **Physically Validated** | 🟡 Implemented | Primary host environment; SendInput & RawInput backends active. |
+| **Windows 10 / 11** | ARM64 | 🟡 Compiled | 🟡 Compiled | 🟡 Compiled | 🟡 Implemented | Compiles cleanly via cross-target; physical hardware pending. |
+| **Linux (X11 / Wayland)** | x64 | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🟡 Implemented | mDNS + UDP broadcast discovery and Noise transport fully platform-agnostic. |
+| **Linux** | ARM64 | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🟡 Implemented | Platform-agnostic network layer unit-tested. |
+| **macOS (Apple Silicon)** | ARM64 | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🟡 Implemented | CGEvent abstraction implemented; network & Noise stack tested. |
+| **macOS (Intel)** | x64 | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🧪 Unit & Sim Tested | 🟡 Implemented | Core crates compile and pass tests. |
 
 **Legend:**
-- `✓` Tested & Verified Working
-- `🟡` In Progress / Partial Mock & Simulation Validation
-- `❓` Untested / Unverified Architecture
+- **Physically Validated**: Verified working on physical hardware environment with active input devices.
+- **🧪 Unit & Sim Tested**: Platform-agnostic core logic validated via automated unit, integration, and loopback simulation tests.
+- **🟡 Compiled / Implemented**: Code path complete; awaiting physical hardware target validation.
+

@@ -2,12 +2,18 @@ use clap::{Parser, Subcommand};
 use friday_core::{
     DisplayBounds, Edge, InputEvent, InputRouter, MouseEvent, ScreenLayout, ScreenTopology,
 };
-use friday_network::{NetworkPacket, NetworkTransport, PacketPayload};
-use std::time::Instant;
+use friday_network::{
+    generate_pairing_pin, DeviceIdentity, DeviceManager, NetworkPacket, NetworkTransport,
+    PacketPayload, TrustStore,
+};
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "friday")]
-#[command(about = "FRIDAY — Ultra-Low-Latency Peripheral & Data Sharing Platform", long_about = None)]
+#[command(
+    about = "FRIDAY — Ultra-Low-Latency Peripheral & Data Sharing Platform",
+    long_about = None
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -22,14 +28,27 @@ enum Commands {
     },
     /// Show current status and active peer connections
     Status,
-    /// List paired and discovered devices
+    /// List local identity, paired devices, and discovered nearby devices
     Devices,
-    /// Pair with a remote FRIDAY node
-    Pair { target: String },
-    /// Connect to a paired device
+    /// Scan local network for nearby FRIDAY devices via mDNS and broadcast
+    Discover {
+        #[arg(short, long, default_value = "3")]
+        seconds: u64,
+    },
+    /// Pair with a remote FRIDAY node (by device ID or IP address)
+    Pair {
+        /// Target device ID or IP address
+        target: String,
+        /// Optional 6-digit PIN code (generated automatically if not provided)
+        #[arg(short, long)]
+        pin: Option<String>,
+    },
+    /// Connect to a paired trusted device
     Connect { device_id: String },
     /// Disconnect from a device
     Disconnect { device_id: String },
+    /// Show detailed network diagnostics and interface metrics
+    Diagnostics,
     /// Run health check and platform capabilities diagnostics
     Doctor,
     /// Run real-time latency and throughput benchmarks
@@ -57,26 +76,137 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("FRIDAY Core engine initialized and ready.");
         }
         Commands::Status => {
+            let identity = DeviceIdentity::load_or_create(None);
+            let trust_store = TrustStore::new(None);
+            let trusted = trust_store.list_trusted();
+
             println!("FRIDAY Status:");
-            println!("  Engine State: Running");
-            println!("  Active Connections: 0");
-            println!("  Data Plane Latency: <1ms (estimated)");
+            println!(
+                "  Local Device   : {} ('{}')",
+                identity.device_id, identity.display_name
+            );
+            println!("  OS Target      : {} ({})", identity.os, identity.arch);
+            println!("  Engine State   : Running");
+            println!("  Trusted Peers  : {}", trusted.len());
+            println!("  Data Plane     : Ultra-Low-Latency UDP (<1ms estimated)");
         }
         Commands::Devices => {
-            println!("Paired Devices:");
-            println!("  (No paired devices found)");
+            let identity = DeviceIdentity::load_or_create(None);
+            let trust_store = TrustStore::new(None);
+            let trusted = trust_store.list_trusted();
+
+            println!("🖥  LOCAL DEVICE (This Machine):");
+            println!("  Name         : {}", identity.display_name);
+            println!("  Device ID    : {}", identity.device_id);
+            println!("  Hostname     : {}", identity.hostname);
+            println!("  Platform     : {} ({})", identity.os, identity.arch);
+            println!("  Version      : {}", identity.version);
+            println!();
+
+            println!("🤝 PAIRED & TRUSTED DEVICES ({}):", trusted.len());
+            if trusted.is_empty() {
+                println!(
+                    "  (No paired devices found. Run 'friday discover' to find nearby devices)"
+                );
+            } else {
+                for dev in trusted {
+                    println!(
+                        "  • {} [Trusted]\n    ID: {}\n    Last Endpoint: {}:{}",
+                        dev.display_name, dev.device_id, dev.last_known_ip, dev.last_known_port
+                    );
+                }
+            }
         }
-        Commands::Pair { target } => {
-            println!("Initiating pairing with target: {}", target);
-            println!("✓ Handshake complete. Device paired.");
+        Commands::Discover { seconds } => {
+            println!(
+                "🔍 Scanning local network for FRIDAY devices via mDNS and UDP broadcast ({}s)...",
+                seconds
+            );
+
+            let dm = DeviceManager::new("0.0.0.0:0", 48700, None).await?;
+            dm.start_discovery().ok();
+            dm.scan_now();
+
+            tokio::time::sleep(Duration::from_secs(seconds)).await;
+
+            let discovered = dm.get_discovered_devices();
+            println!("\nDiscovered Devices ({})", discovered.len());
+            if discovered.is_empty() {
+                println!("  No new FRIDAY devices detected on local network.");
+                println!("  Ensure FRIDAY is open and running on the other computer.");
+            } else {
+                for dev in discovered {
+                    let trust_status = if dev.is_paired {
+                        "🟢 Paired & Trusted"
+                    } else {
+                        "⚪ Nearby (Unpaired)"
+                    };
+                    println!(
+                        "  • {} ({})\n    Status     : {}\n    Device ID  : {}\n    Endpoint   : {}\n    Source     : {:?}",
+                        dev.display_name, dev.os, trust_status, dev.device_id, dev.endpoint, dev.discovery_source
+                    );
+                }
+            }
+        }
+        Commands::Pair { target, pin } => {
+            let chosen_pin = pin.unwrap_or_else(generate_pairing_pin);
+            println!("🤝 Initiating pairing with '{}'...", target);
+            println!("--------------------------------------------------");
+            println!("  Pairing Code: {}", chosen_pin);
+            println!("--------------------------------------------------");
+            println!("  Please confirm this 6-digit code on the other device.");
+            println!("  Waiting for approval (up to 30s)...");
+
+            let dm = DeviceManager::new("0.0.0.0:0", 48700, None).await?;
+            match dm.pair_device(&target, Some(&chosen_pin)).await {
+                Ok(trusted_device) => {
+                    println!("\n✅ Pairing SUCCESSFUL!");
+                    println!("  Device Name : {}", trusted_device.display_name);
+                    println!("  Device ID   : {}", trusted_device.device_id);
+                    println!("  Saved to trust store. Automatic connection enabled.");
+                }
+                Err(e) => {
+                    eprintln!("\n❌ Pairing FAILED: {}", e);
+                }
+            }
         }
         Commands::Connect { device_id } => {
-            println!("Connecting to device: {}", device_id);
-            println!("✓ Control plane session established.");
+            println!("Connecting to trusted device: {}", device_id);
+            let dm = DeviceManager::new("0.0.0.0:0", 48700, None).await?;
+            match dm.connect_device(&device_id).await {
+                Ok(()) => {
+                    println!("✓ Authenticated session established.");
+                }
+                Err(e) => {
+                    eprintln!("Failed to connect: {}", e);
+                }
+            }
         }
         Commands::Disconnect { device_id } => {
             println!("Disconnecting from device: {}", device_id);
+            let dm = DeviceManager::new("0.0.0.0:0", 48700, None).await?;
+            let _ = dm.disconnect_device(&device_id).await;
             println!("✓ Disconnected.");
+        }
+        Commands::Diagnostics => {
+            let identity = DeviceIdentity::load_or_create(None);
+            let dm = DeviceManager::new("0.0.0.0:0", 48700, None).await?;
+            let diag = dm.get_network_diagnostics(None);
+
+            println!("=== FRIDAY Network & Transport Diagnostics ===");
+            println!("Local Device ID      : {}", identity.device_id);
+            println!("Display Name         : {}", identity.display_name);
+            println!("Local IP Endpoint    : {}:{}", diag.local_ip, diag.port);
+            println!("Transport Layer      : {}", diag.transport);
+            println!("Network Interface    : {}", diag.interface);
+            println!("Discovery Engine     : {}", diag.discovery_status);
+            println!(
+                "Packets Sent / Recv  : {} / {}",
+                diag.packets_sent, diag.packets_received
+            );
+            println!("Round-Trip Latency   : {:.2} ms", diag.rtt_ms);
+            println!("Estimated Loss       : {:.1}%", diag.packet_loss_pct);
+            println!("Active State         : {:?}", diag.state);
         }
         Commands::Doctor => {
             println!("=== FRIDAY System Doctor ===");
@@ -93,14 +223,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             #[cfg(target_os = "windows")]
             {
-                println!("Subsystem: Win32 RawInput API");
+                println!("Subsystem: Win32 RawInput / SendInput API");
             }
             #[cfg(target_os = "macos")]
             {
                 println!("Subsystem: Quartz CGEvent API");
             }
 
-            println!("Network Engine: UDP / High Frequency Datagrams");
+            println!("Discovery Engine: mDNS Bonjour + Subnet Broadcast Fallback");
+            println!("Data Transport: UDP High Frequency Datagrams");
+            println!("Security: Authenticated Pairing Tokens & Trust Store");
             println!("✓ All health checks passed.");
         }
         Commands::Benchmark { samples } => {

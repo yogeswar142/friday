@@ -10,6 +10,7 @@ pub mod types;
 use state::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
+use tauri::Emitter;
 
 pub fn run() {
     // On Linux, WebKit 2.52+ with DMA-BUF renderer can fail to load the tauri://
@@ -32,6 +33,7 @@ pub fn run() {
     discovery::start_discovery_service(shared_state.clone(), stop_flag.clone());
 
     // Launch background UDP pairing responder (listens for incoming pair requests)
+    // Also wires Tauri event emission when a pair request arrives (event-driven, not polling)
     pairing::start_pairing_responder(shared_state.clone(), stop_flag.clone());
 
     // Launch background Mouse Topology Engine service
@@ -39,6 +41,26 @@ pub fn run() {
 
     tauri::Builder::default()
         .manage(shared_state)
+        // Wire event-driven pair request notifications to the frontend:
+        // The pairing responder thread pushes pair requests to PENDING_REQUESTS and signals
+        // a channel. Here we register a setup hook to subscribe and emit Tauri events.
+        .setup(|app| {
+            // Spawn a background thread that polls the Tauri-bound pair notification channel
+            // and forwards events to the WebView via emit_all().
+            // We use the notification channel set up in pairing::start_pairing_responder().
+            let app_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                // Block on the pair-notification receiver for event-driven delivery.
+                // This replaces the 2-second frontend polling.
+                loop {
+                    if let Some(req) = pairing::wait_for_next_pair_request() {
+                        // Emit directly to all WebView windows — no polling delay.
+                        let _ = app_handle.emit("friday:pair_request", &req);
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_status,
             commands::start_engine,
@@ -72,6 +94,17 @@ pub fn run() {
             commands::get_pending_pair_requests,
             commands::respond_to_pair_request,
             commands::set_device_role,
+            commands::get_local_device,
+            commands::set_local_device_name,
+            commands::get_discovered_devices,
+            commands::get_paired_devices,
+            commands::start_discovery,
+            commands::stop_discovery,
+            commands::approve_pairing,
+            commands::reject_pairing,
+            commands::forget_device,
+            commands::get_connection_status,
+            commands::get_network_diagnostics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running FRIDAY desktop application");

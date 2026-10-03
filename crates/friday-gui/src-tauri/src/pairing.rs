@@ -29,6 +29,7 @@
 ///     → pair_device() called automatically on accept
 use std::net::UdpSocket;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -52,11 +53,31 @@ pub struct PendingPairRequest {
 /// Global list of pending incoming requests (populated by responder thread)
 pub static PENDING_REQUESTS: OnceLock<Mutex<Vec<PendingPairRequest>>> = OnceLock::new();
 
+/// Event-driven notification channel: responder sends on TX, Tauri setup hook receives on RX.
+/// This eliminates 2-second polling for pair requests.
+static PAIR_NOTIFY_TX: OnceLock<Mutex<Sender<PendingPairRequest>>> = OnceLock::new();
+static PAIR_NOTIFY_RX: OnceLock<Mutex<Receiver<PendingPairRequest>>> = OnceLock::new();
+
+fn init_notify_channel() {
+    // Initialize once; subsequent calls are no-ops due to OnceLock semantics.
+    PAIR_NOTIFY_TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<PendingPairRequest>();
+        PAIR_NOTIFY_RX.get_or_init(|| Mutex::new(rx));
+        Mutex::new(tx)
+    });
+    // Ensure RX side is also initialized (needed if called from the receiver side first)
+    PAIR_NOTIFY_RX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<PendingPairRequest>();
+        PAIR_NOTIFY_TX.get_or_init(|| Mutex::new(tx));
+        Mutex::new(rx)
+    });
+}
+
 fn pending() -> &'static Mutex<Vec<PendingPairRequest>> {
     PENDING_REQUESTS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Get all pending incoming pair requests (called by GUI poll)
+/// Get all pending incoming pair requests (called by GUI poll as fallback)
 pub fn get_pending_requests() -> Vec<PendingPairRequest> {
     pending().lock().unwrap().clone()
 }
@@ -64,6 +85,23 @@ pub fn get_pending_requests() -> Vec<PendingPairRequest> {
 /// Remove a request by PIN (after user responds)
 pub fn remove_pending(pin: &str) {
     pending().lock().unwrap().retain(|r| r.pin != pin);
+}
+
+/// Block until a new pair request arrives, then return it.
+/// Called from the Tauri setup hook thread — never called from GUI/main thread.
+/// Returns `None` only if the notification channel is broken (should not happen in production).
+pub fn wait_for_next_pair_request() -> Option<PendingPairRequest> {
+    init_notify_channel();
+    if let Some(rx_mutex) = PAIR_NOTIFY_RX.get() {
+        // Block with a timeout so the loop can exit gracefully on shutdown
+        rx_mutex
+            .lock()
+            .unwrap()
+            .recv_timeout(Duration::from_secs(30))
+            .ok()
+    } else {
+        None
+    }
 }
 
 // ── Initiator side ─────────────────────────────────────────────────────────────
@@ -356,13 +394,23 @@ pub fn start_pairing_responder(
                                 .iter()
                                 .any(|r| r.pin == pin && r.from_id == from_id)
                             {
-                                pending_list.push(PendingPairRequest {
+                                let new_req = PendingPairRequest {
                                     pin,
                                     from_id,
                                     from_name,
                                     from_ip,
                                     reply_port,
-                                });
+                                };
+                                pending_list.push(new_req.clone());
+                                drop(pending_list); // release lock before notifying
+
+                                // Event-driven: notify the Tauri setup hook thread immediately.
+                                // This triggers an emit_all("friday:pair_request", ...) with
+                                // zero polling delay instead of waiting for the 2-second poll.
+                                init_notify_channel();
+                                if let Some(tx) = PAIR_NOTIFY_TX.get() {
+                                    let _ = tx.lock().unwrap().send(new_req);
+                                }
                             }
                         } else {
                             warn!(

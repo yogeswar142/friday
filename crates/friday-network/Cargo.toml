@@ -13,3 +13,10 @@ bincode.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 bytes.workspace = true
+mdns-sd = "0.21"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+sha2 = "0.10"
+dirs = "6.0"
+serde_json = "1.0"
+snow = { version = "0.9", features = ["default-resolver"] }
+rand = "0.8"

@@ -9,6 +9,7 @@ pub struct AppState {
     pub engine_running: bool,
     pub engine_paused: bool,
     pub local_device_id: String,
+    pub local_display_name: String,
     pub active_device_id: String,
     pub is_host: bool,
     pub topology: CircularTopology,
@@ -80,13 +81,15 @@ impl Default for AppState {
 impl AppState {
     pub fn new() -> Self {
         let config = ConfigManager::load_config();
-        let local_id = detect_local_hostname();
+        let identity = friday_network::DeviceIdentity::load_or_create(None);
+        let local_id = identity.device_id.clone();
+        let local_name = identity.display_name.clone();
         let local_ip = detect_local_ip();
-        let (os, arch) = detect_os_info();
+        let (os, arch) = (identity.os.clone(), identity.arch.clone());
 
         let local_device = DeviceInfo {
             id: local_id.clone(),
-            name: format!("{} (This Machine)", local_id),
+            name: format!("{} (This Machine)", local_name),
             os,
             arch,
             ip_address: local_ip.clone(),
@@ -100,14 +103,44 @@ impl AppState {
                 "mouse_injection".into(),
                 "edge_detection".into(),
             ],
+            connection_state: "Connected".into(),
+            trust_state: "Trusted".into(),
         };
 
         let mut devices = vec![local_device];
+
+        // Load devices from AppConfig
         for mut peer in config.paired_devices {
-            if peer.id != local_id {
+            if peer.id != local_id && !devices.iter().any(|d| d.id == peer.id) {
                 peer.is_local = false;
                 peer.is_active = false;
                 devices.push(peer);
+            }
+        }
+
+        // Also sync from TrustStore
+        let trust_store = friday_network::TrustStore::new(None);
+        for trusted in trust_store.list_trusted() {
+            if trusted.device_id != local_id && !devices.iter().any(|d| d.id == trusted.device_id) {
+                devices.push(DeviceInfo {
+                    id: trusted.device_id.clone(),
+                    name: trusted.display_name.clone(),
+                    os: "Remote Machine".into(),
+                    arch: "x64".into(),
+                    ip_address: trusted.last_known_ip.clone(),
+                    port: trusted.last_known_port,
+                    is_local: false,
+                    is_active: false,
+                    is_connected: true,
+                    latency_ms: 0.85,
+                    capabilities: vec![
+                        "mouse_capture".into(),
+                        "mouse_injection".into(),
+                        "edge_detection".into(),
+                    ],
+                    connection_state: "Connected".into(),
+                    trust_state: "Trusted".into(),
+                });
             }
         }
 
@@ -135,8 +168,8 @@ impl AppState {
             level: "INFO".into(),
             target: "friday_core::engine".into(),
             message: format!(
-                "FRIDAY initialized on local machine: {} ({})",
-                local_id, local_ip
+                "FRIDAY initialized on local machine: {} ({}) [ID: {}]",
+                local_name, local_ip, local_id
             ),
         });
         if ring.len() >= 2 {
@@ -152,6 +185,7 @@ impl AppState {
             engine_running: true,
             engine_paused: false,
             local_device_id: local_id.clone(),
+            local_display_name: local_name,
             active_device_id: local_id,
             is_host: config.is_host,
             topology: ct,

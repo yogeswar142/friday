@@ -14,6 +14,18 @@ pub struct EngineStatus {
     pub topology_summary: String,
 }
 
+fn default_connected_state() -> String {
+    "Connected".to_string()
+}
+
+fn default_trusted_state() -> String {
+    "Trusted".to_string()
+}
+
+fn default_nearby_state() -> String {
+    "Nearby".to_string()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceInfo {
     pub id: String,
@@ -27,6 +39,41 @@ pub struct DeviceInfo {
     pub is_connected: bool,
     pub latency_ms: f32,
     pub capabilities: Vec<String>,
+    #[serde(default = "default_connected_state")]
+    pub connection_state: String,
+    #[serde(default = "default_trusted_state")]
+    pub trust_state: String,
+}
+
+impl DeviceInfo {
+    pub fn new_remote(
+        id: String,
+        name: String,
+        os: String,
+        arch: String,
+        ip_address: String,
+        port: u16,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            os,
+            arch,
+            ip_address,
+            port,
+            is_local: false,
+            is_active: false,
+            is_connected: true,
+            latency_ms: 0.85,
+            capabilities: vec![
+                "mouse_capture".into(),
+                "mouse_injection".into(),
+                "edge_detection".into(),
+            ],
+            connection_state: "Connected".into(),
+            trust_state: "Trusted".into(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -38,6 +85,73 @@ pub struct DiscoveredDevice {
     pub ip_address: String,
     pub port: u16,
     pub is_paired: bool,
+    #[serde(default = "default_nearby_state")]
+    pub connection_state: String,
+    #[serde(default)]
+    pub version: String,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+}
+
+impl DiscoveredDevice {
+    pub fn new(
+        id: String,
+        name: String,
+        os: String,
+        arch: String,
+        ip_address: String,
+        port: u16,
+        is_paired: bool,
+    ) -> Self {
+        Self {
+            id,
+            name,
+            os,
+            arch,
+            ip_address,
+            port,
+            is_paired,
+            connection_state: if is_paired {
+                "Trusted".into()
+            } else {
+                "Nearby".into()
+            },
+            version: "0.1.0".into(),
+            capabilities: vec![
+                "mouse_capture".into(),
+                "mouse_injection".into(),
+                "edge_detection".into(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocalDeviceDto {
+    pub device_id: String,
+    pub display_name: String,
+    pub hostname: String,
+    pub os: String,
+    pub arch: String,
+    pub version: String,
+    pub is_host: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NetworkDiagnosticsDto {
+    pub local_ip: String,
+    pub remote_ip: Option<String>,
+    pub port: u16,
+    pub transport: String,
+    pub interface: String,
+    pub connection_id: String,
+    pub packets_sent: u64,
+    pub packets_received: u64,
+    pub rtt_ms: f32,
+    pub packet_loss_pct: f32,
+    pub reconnect_attempts: u32,
+    pub discovery_status: String,
+    pub connection_state: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

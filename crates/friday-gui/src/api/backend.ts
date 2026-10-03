@@ -4,7 +4,9 @@ import {
   DiagnosticReport,
   DiscoveredDevice,
   EngineStatus,
+  LocalDeviceDto,
   LogEntry,
+  NetworkDiagnosticsDto,
   PendingPairRequest,
   PlatformCapabilities,
   PlatformPermissions,
@@ -54,6 +56,15 @@ let mockDevices: DeviceInfo[] = [
 
 let mockDiscovered: DiscoveredDevice[] = [];
 
+let mockLocalDevice: LocalDeviceDto = {
+  device_id: "15435278-0a86-4fae-a84a-869833b6dad1",
+  display_name: detectedHost,
+  hostname: detectedHost,
+  os: detectedOs,
+  arch: "x64",
+  version: "0.2.0",
+  is_host: true,
+};
 
 let mockSettings: SettingsDto = {
   edge_dwell_ms: 500,
@@ -310,6 +321,62 @@ function mockFallback<T>(cmd: string, args?: Record<string, unknown>): T {
       // In mock mode, simulate instant accept after 1.5s
       return new Promise<T>((resolve) => setTimeout(() => resolve(true as unknown as T), 1500)) as unknown as T;
 
+    case "get_local_device":
+      return mockLocalDevice as unknown as T;
+
+    case "set_local_device_name": {
+      const name = args?.name as string;
+      if (name) {
+        mockLocalDevice.display_name = name;
+      }
+      return mockLocalDevice as unknown as T;
+    }
+
+    case "get_discovered_devices":
+      return mockDiscovered as unknown as T;
+
+    case "get_paired_devices":
+      return mockDevices as unknown as T;
+
+    case "start_discovery":
+      return mockDiscovered as unknown as T;
+
+    case "stop_discovery":
+      return undefined as unknown as T;
+
+    case "approve_pairing":
+      return undefined as unknown as T;
+
+    case "reject_pairing":
+      return undefined as unknown as T;
+
+    case "forget_device": {
+      const devId = args?.device_id as string;
+      mockDevices = mockDevices.filter((d) => d.id !== devId);
+      mockRing = mockRing.filter((id) => id !== devId);
+      return undefined as unknown as T;
+    }
+
+    case "get_connection_status":
+      return "Connected" as unknown as T;
+
+    case "get_network_diagnostics":
+      return {
+        local_ip: "192.168.1.100",
+        remote_ip: "192.168.1.105",
+        port: 48700,
+        transport: "UDP with Bincode",
+        interface: "Wi-Fi (WLAN)",
+        connection_id: mockLocalDevice.device_id,
+        packets_sent: 12450,
+        packets_received: 12430,
+        rtt_ms: 0.85,
+        packet_loss_pct: 0.0,
+        reconnect_attempts: 0,
+        discovery_status: "Active (mDNS _friday._udp.local. + Broadcast)",
+        connection_state: "Connected",
+      } as unknown as T;
+
     default:
       return undefined as unknown as T;
   }
@@ -371,4 +438,34 @@ export const api = {
   /** Set device role: true for Host (Controller), false for Client (Receiver) */
   setDeviceRole: (isHost: boolean) =>
     invokeTauri<void>("set_device_role", { isHost, is_host: isHost }),
+  /** Get stable identity and name of this local machine */
+  getLocalDevice: () => invokeTauri<LocalDeviceDto>("get_local_device"),
+  /** Rename this machine's display name */
+  setLocalDeviceName: (name: string) =>
+    invokeTauri<LocalDeviceDto>("set_local_device_name", { name }),
+  /** Get list of nearby discovered devices */
+  getDiscoveredDevices: () =>
+    invokeTauri<DiscoveredDevice[]>("get_discovered_devices"),
+  /** Get list of paired & trusted devices */
+  getPairedDevices: () => invokeTauri<DeviceInfo[]>("get_paired_devices"),
+  /** Start active discovery refresh */
+  startDiscovery: () => invokeTauri<DiscoveredDevice[]>("start_discovery"),
+  /** Stop discovery */
+  stopDiscovery: () => invokeTauri<void>("stop_discovery"),
+  /** Approve pending pairing request with PIN */
+  approvePairing: (pin: string) => invokeTauri<void>("approve_pairing", { pin }),
+  /** Reject pending pairing request with PIN */
+  rejectPairing: (pin: string) => invokeTauri<void>("reject_pairing", { pin }),
+  /** Forget / unpair device permanently */
+  forgetDevice: (deviceId: string) =>
+    invokeTauri<void>("forget_device", { deviceId, device_id: deviceId }),
+  /** Query live connection status */
+  getConnectionStatus: (deviceId: string) =>
+    invokeTauri<string>("get_connection_status", { deviceId, device_id: deviceId }),
+  /** Query low-level network diagnostics */
+  getNetworkDiagnostics: (targetId?: string) =>
+    invokeTauri<NetworkDiagnosticsDto>("get_network_diagnostics", {
+      targetId,
+      target_id: targetId,
+    }),
 };

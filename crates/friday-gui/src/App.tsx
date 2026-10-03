@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { Navbar } from "./components/Navbar";
 import { Overview } from "./components/Overview";
 import { CircularTopologyEditor } from "./components/CircularTopologyEditor";
@@ -13,6 +14,7 @@ import {
   DiagnosticReport,
   DiscoveredDevice,
   EngineStatus,
+  LocalDeviceDto,
   LogEntry,
   PendingPairRequest,
   PlatformCapabilities,
@@ -30,6 +32,7 @@ export const App: React.FC = () => {
   const [devices, setDevices] = useState<DeviceInfo[]>([]);
   const [discovered, setDiscovered] = useState<DiscoveredDevice[]>([]);
   const [pendingRequests, setPendingRequests] = useState<PendingPairRequest[]>([]);
+  const [localDevice, setLocalDevice] = useState<LocalDeviceDto | null>(null);
   const [topology, setTopology] = useState<TopologyDto | null>(null);
   const [permissions, setPermissions] = useState<PlatformPermissions | null>(null);
   const [capabilities, setCapabilities] = useState<PlatformCapabilities | null>(null);
@@ -42,7 +45,32 @@ export const App: React.FC = () => {
   const [firstRunModalOpen, setFirstRunModalOpen] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light" | "system">("dark");
 
-  // Initial load
+  // ── Event-driven pair request listener ──────────────────────────────────────
+  // The Rust backend emits 'friday:pair_request' immediately when a remote device
+  // sends a pairing request — no polling delay. This listener shows the modal instantly.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+
+    listen<PendingPairRequest>("friday:pair_request", (event) => {
+      const req = event.payload;
+      setPendingRequests((prev) => {
+        // Deduplicate: only add if no request with same PIN + device ID exists
+        const alreadyExists = prev.some(
+          (r) => r.pin === req.pin && r.from_id === req.from_id
+        );
+        if (alreadyExists) return prev;
+        return [...prev, req];
+      });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, []);
+
+  // Initial load + polling fallback for state sync
   useEffect(() => {
     // Check first-run experience flag
     const hasSeenFirstRun = localStorage.getItem("friday_first_run_completed");
@@ -60,14 +88,17 @@ export const App: React.FC = () => {
       // Poll devices and topology to keep remote changes (unpair/pair/connect) in sync
       api.getDevices().then(setDevices).catch(() => {});
       api.getTopology().then(setTopology).catch(() => {});
-      // Poll for incoming pair requests on this machine (from remote FRIDAY nodes)
+      // Poll for incoming pair requests as fallback (primary path is Tauri event above)
       api.getPendingPairRequests().then(setPendingRequests).catch(() => {});
       // Poll logs so diagnostics log view updates in real time
       api.getLogs().then(setLogs).catch(() => {});
+      // Poll local device identity
+      api.getLocalDevice().then(setLocalDevice).catch(() => {});
     }, 2000);
 
     return () => clearInterval(interval);
   }, []);
+
 
   // Theme application
   useEffect(() => {
@@ -76,7 +107,7 @@ export const App: React.FC = () => {
 
   const refreshAllData = async () => {
     try {
-      const [s, t, devs, disc, topo, perms, caps, sett, l] = await Promise.all([
+      const [s, t, devs, disc, topo, perms, caps, sett, l, localDev] = await Promise.all([
         api.getStatus(),
         api.getTelemetry(),
         api.getDevices(),
@@ -86,6 +117,7 @@ export const App: React.FC = () => {
         api.getPlatformCapabilities(),
         api.getSettings(),
         api.getLogs(),
+        api.getLocalDevice(),
       ]);
 
       setStatus(s);
@@ -97,6 +129,7 @@ export const App: React.FC = () => {
       setCapabilities(caps);
       setSettings(sett);
       setLogs(l);
+      setLocalDevice(localDev);
 
       // Auto-run initial diagnostics report
       api.runDiagnostics().then(setDiagnosticReport).catch(() => {});
@@ -170,6 +203,16 @@ export const App: React.FC = () => {
       await refreshAllData();
     } catch (e) {
       console.error("Failed to respond to pair request:", e);
+    }
+  };
+
+  const handleUpdateLocalName = async (name: string) => {
+    try {
+      const updated = await api.setLocalDeviceName(name);
+      setLocalDevice(updated);
+      await refreshAllData();
+    } catch (e) {
+      console.error("Failed to update local device name:", e);
     }
   };
 
@@ -264,6 +307,7 @@ export const App: React.FC = () => {
             devices={devices}
             permissions={permissions}
             ring={topology?.ring || []}
+            localDevice={localDevice}
             onNavigateTab={setCurrentTab}
             onSwitchOwner={handleSwitchOwner}
             onRefresh={refreshAllData}
@@ -272,13 +316,14 @@ export const App: React.FC = () => {
 
         {currentTab === "devices" && (
           <Devices
+            localDevice={localDevice}
             devices={devices}
             discovered={discovered}
             pendingRequests={pendingRequests}
             activeDeviceId={status?.active_device_id || ""}
             isHost={status?.is_host ?? true}
+            engineRunning={status?.state === "running"}
             onInitiatePairing={handleInitiatePairing}
-            onAddManualDevice={handleManualAddDevice}
             onUnpairDevice={handleUnpairDevice}
             onConnectDevice={handleConnectDevice}
             onDisconnectDevice={handleDisconnectDevice}
@@ -288,6 +333,8 @@ export const App: React.FC = () => {
               setDiscovered(d);
             }}
             onRespondToPairRequest={handleRespondToPairRequest}
+            onUpdateLocalName={handleUpdateLocalName}
+            onNavigateToAdvancedNetwork={() => setCurrentTab("settings")}
           />
         )}
 
@@ -318,6 +365,8 @@ export const App: React.FC = () => {
           <Settings
             settings={settings}
             onSaveSettings={handleSaveSettings}
+            onAddManualDevice={handleManualAddDevice}
+            onInitiatePairing={handleInitiatePairing}
           />
         )}
       </main>

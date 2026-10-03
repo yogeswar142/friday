@@ -2,57 +2,71 @@ import React, { useState } from "react";
 import {
   Bell,
   CheckCircle2,
+  Edit2,
+  Globe,
   HardDrive,
+  HelpCircle,
   Laptop,
+  Monitor,
   Plus,
   RefreshCw,
   Search,
   Shield,
+  Trash2,
   Unplug,
+  Wifi,
   XCircle,
   Zap,
 } from "lucide-react";
-import { DeviceInfo, DiscoveredDevice, PendingPairRequest } from "../types";
+import { DeviceInfo, DiscoveredDevice, LocalDeviceDto, PendingPairRequest } from "../types";
 
 interface DevicesProps {
+  localDevice: LocalDeviceDto | null;
   devices: DeviceInfo[];
   discovered: DiscoveredDevice[];
   pendingRequests: PendingPairRequest[];
   activeDeviceId: string;
   isHost?: boolean;
+  engineRunning?: boolean;
   onInitiatePairing: (deviceId: string, pin: string, targetIp?: string) => Promise<boolean>;
-  onAddManualDevice: (ip: string, port?: number, name?: string) => void;
   onUnpairDevice: (deviceId: string) => void;
   onConnectDevice: (deviceId: string) => void;
   onDisconnectDevice: (deviceId: string) => void;
   onSwitchOwner: (deviceId: string) => void;
   onRefreshDiscovery: () => void;
   onRespondToPairRequest: (pin: string, accept: boolean) => void;
+  onUpdateLocalName: (name: string) => Promise<void>;
+  onNavigateToAdvancedNetwork?: () => void;
 }
 
 export const Devices: React.FC<DevicesProps> = ({
+  localDevice,
   devices,
   discovered,
   pendingRequests,
   activeDeviceId,
   isHost = true,
+  engineRunning = true,
   onInitiatePairing,
-  onAddManualDevice,
   onUnpairDevice,
   onConnectDevice,
   onDisconnectDevice,
   onSwitchOwner,
   onRefreshDiscovery,
   onRespondToPairRequest,
+  onUpdateLocalName,
+  onNavigateToAdvancedNetwork,
 }) => {
   const [pairingModalDev, setPairingModalDev] = useState<DiscoveredDevice | null>(null);
   const [pairCode, setPairCode] = useState("");
   const [isPairingLoading, setIsPairingLoading] = useState(false);
   const [pairingResult, setPairingResult] = useState<"accepted" | "rejected" | null>(null);
   const [pairingError, setPairingError] = useState<string | null>(null);
-  const [manualIp, setManualIp] = useState("");
-  const [manualName, setManualName] = useState("");
-  const [manualPort, setManualPort] = useState("48700");
+
+  // Local Device Rename Modal State
+  const [isRenameModalOpen, setIsRenameModalOpen] = useState(false);
+  const [newNameInput, setNewNameInput] = useState("");
+  const [isSavingName, setIsSavingName] = useState(false);
 
   const startPairingFlow = (dev: DiscoveredDevice) => {
     const pin = Math.floor(100000 + Math.random() * 900000).toString();
@@ -77,7 +91,6 @@ export const Devices: React.FC<DevicesProps> = ({
         }, 1500);
       }
     } catch (e: unknown) {
-      // Rust returned a real error string (e.g. firewall / unreachable)
       const errMsg = typeof e === "string" ? e
         : (e as { message?: string })?.message ?? String(e);
       setPairingResult("rejected");
@@ -87,10 +100,144 @@ export const Devices: React.FC<DevicesProps> = ({
     }
   };
 
+  const openRenameModal = () => {
+    setNewNameInput(localDevice?.display_name || "");
+    setIsRenameModalOpen(true);
+  };
+
+  const handleSaveName = async () => {
+    if (!newNameInput.trim()) return;
+    setIsSavingName(true);
+    try {
+      await onUpdateLocalName(newNameInput.trim());
+      setIsRenameModalOpen(false);
+    } catch (e) {
+      console.error("Failed to rename device:", e);
+    } finally {
+      setIsSavingName(false);
+    }
+  };
+
+  const formatPinWithSpace = (code: string) => {
+    if (code.length === 6) {
+      return `${code.slice(0, 3)} ${code.slice(3)}`;
+    }
+    return code;
+  };
+
+  const renderConnectionStateBadge = (state?: string, isConnected?: boolean) => {
+    const normalized = state?.toLowerCase() || (isConnected ? "connected" : "disconnected");
+
+    switch (normalized) {
+      case "connected":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "12px",
+              fontWeight: 600,
+              padding: "3px 9px",
+              borderRadius: "var(--radius-full)",
+              background: "rgba(16, 185, 129, 0.12)",
+              color: "var(--accent-emerald)",
+              border: "1px solid rgba(16, 185, 129, 0.3)",
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent-emerald)" }} />
+            Connected
+          </span>
+        );
+      case "reconnecting":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "12px",
+              fontWeight: 600,
+              padding: "3px 9px",
+              borderRadius: "var(--radius-full)",
+              background: "rgba(245, 158, 11, 0.12)",
+              color: "var(--accent-amber)",
+              border: "1px solid rgba(245, 158, 11, 0.3)",
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent-amber)" }} />
+            Reconnecting
+          </span>
+        );
+      case "connecting":
+      case "pairing":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "12px",
+              fontWeight: 600,
+              padding: "3px 9px",
+              borderRadius: "var(--radius-full)",
+              background: "rgba(6, 182, 212, 0.12)",
+              color: "var(--accent-cyan)",
+              border: "1px solid rgba(6, 182, 212, 0.3)",
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent-cyan)" }} />
+            {normalized === "pairing" ? "Pairing" : "Connecting"}
+          </span>
+        );
+      case "unreachable":
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "12px",
+              fontWeight: 600,
+              padding: "3px 9px",
+              borderRadius: "var(--radius-full)",
+              background: "rgba(244, 63, 94, 0.12)",
+              color: "var(--accent-rose)",
+              border: "1px solid rgba(244, 63, 94, 0.3)",
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "var(--accent-rose)" }} />
+            Unreachable
+          </span>
+        );
+      default:
+        return (
+          <span
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              gap: "5px",
+              fontSize: "12px",
+              fontWeight: 600,
+              padding: "3px 9px",
+              borderRadius: "var(--radius-full)",
+              background: "rgba(148, 163, 184, 0.12)",
+              color: "var(--text-secondary)",
+              border: "1px solid rgba(148, 163, 184, 0.3)",
+            }}
+          >
+            <span style={{ width: "6px", height: "6px", borderRadius: "50%", background: "#94a3b8" }} />
+            Disconnected
+          </span>
+        );
+    }
+  };
+
+  const connectedRemotes = devices.filter((d) => !d.is_local);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: "24px" }}>
-
-      {/* ── Incoming Pair Requests Banner (shown on remote device) ── */}
+      {/* ── Incoming Pair Requests Banner (shown on remote device when pairing) ── */}
       {pendingRequests.length > 0 && (
         <div
           style={{
@@ -113,26 +260,25 @@ export const Devices: React.FC<DevicesProps> = ({
               style={{
                 display: "flex",
                 flexDirection: "column",
-                gap: "10px",
+                gap: "12px",
                 background: "var(--bg-secondary)",
                 borderRadius: "var(--radius-sm)",
-                padding: "14px 16px",
+                padding: "16px 18px",
                 border: "1px solid var(--border-subtle)",
               }}
             >
               <p style={{ fontSize: "13px", color: "var(--text-secondary)" }}>
-                <strong style={{ color: "var(--text-primary)" }}>{req.from_name}</strong>
-                {" "}({req.from_ip}) wants to pair with this machine.
+                <strong style={{ color: "var(--text-primary)" }}>{req.from_name}</strong> wants to pair with this machine.
               </p>
-              <p style={{ fontSize: "12px", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                Confirm that the PIN on their screen matches:
+              <p style={{ fontSize: "12px", color: "var(--text-muted)" }}>
+                Confirm that the security code on their screen matches:
               </p>
               <div
                 style={{
                   fontFamily: "var(--font-mono)",
-                  fontSize: "28px",
+                  fontSize: "30px",
                   fontWeight: 700,
-                  letterSpacing: "8px",
+                  letterSpacing: "6px",
                   textAlign: "center",
                   padding: "12px",
                   background: "var(--bg-card)",
@@ -141,7 +287,7 @@ export const Devices: React.FC<DevicesProps> = ({
                   color: "#06b6d4",
                 }}
               >
-                {req.pin}
+                {formatPinWithSpace(req.pin)}
               </div>
               <div style={{ display: "flex", gap: "10px" }}>
                 <button
@@ -149,7 +295,7 @@ export const Devices: React.FC<DevicesProps> = ({
                   style={{ flex: 1, color: "var(--accent-rose)" }}
                   onClick={() => onRespondToPairRequest(req.pin, false)}
                 >
-                  <XCircle size={13} />
+                  <XCircle size={14} />
                   Reject
                 </button>
                 <button
@@ -157,7 +303,7 @@ export const Devices: React.FC<DevicesProps> = ({
                   style={{ flex: 2 }}
                   onClick={() => onRespondToPairRequest(req.pin, true)}
                 >
-                  <CheckCircle2 size={13} />
+                  <CheckCircle2 size={14} />
                   Accept & Pair
                 </button>
               </div>
@@ -166,320 +312,340 @@ export const Devices: React.FC<DevicesProps> = ({
         </div>
       )}
 
-      {/* Connected Devices Section */}
-      <div className="card">
-        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
-          <div>
-            <h2 className="card-title">
-              <Laptop size={17} color="#10b981" />
-              Connected Devices ({devices.length})
-            </h2>
-            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
-              {isHost
-                ? "Main Host Mode — this machine's mouse & touchpad control all connected screens across the circular topology."
-                : "Client Screen Mode — receiving remote mouse & trackpad input from the Main Host."}
-            </p>
+      {/* ── 1. MAIN HOST SECTION (Prominently Visualized) ── */}
+      <div
+        className="card"
+        style={{
+          background: "linear-gradient(135deg, rgba(6, 182, 212, 0.05) 0%, rgba(59, 130, 246, 0.03) 100%), var(--bg-card)",
+          border: "1px solid rgba(6, 182, 212, 0.3)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "14px" }}>
+            <div
+              style={{
+                width: "48px",
+                height: "48px",
+                borderRadius: "var(--radius-md)",
+                background: "rgba(6, 182, 212, 0.15)",
+                border: "1px solid rgba(6, 182, 212, 0.4)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Monitor size={26} color="#06b6d4" />
+            </div>
+
+            <div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <h1 style={{ fontSize: "18px", fontWeight: 700, letterSpacing: "-0.01em" }}>
+                  {localDevice?.display_name || "Main Host"}
+                </h1>
+                <button
+                  onClick={openRenameModal}
+                  title="Rename this device"
+                  style={{
+                    color: "var(--text-muted)",
+                    padding: "3px",
+                    display: "flex",
+                    alignItems: "center",
+                    borderRadius: "var(--radius-sm)",
+                    transition: "color 0.15s ease",
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.color = "var(--text-primary)")}
+                  onMouseLeave={(e) => (e.currentTarget.style.color = "var(--text-muted)")}
+                >
+                  <Edit2 size={13} />
+                </button>
+              </div>
+              <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                {localDevice?.os || "Windows 11"} • {localDevice?.arch || "ARM64"} • FRIDAY v{localDevice?.version || "0.2.0"}
+              </div>
+            </div>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
             <span
               style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "6px",
                 fontSize: "12px",
                 fontWeight: 700,
                 padding: "5px 12px",
-                borderRadius: "var(--radius-sm)",
-                background: isHost ? "rgba(6, 182, 212, 0.15)" : "rgba(168, 85, 247, 0.15)",
-                color: isHost ? "#06b6d4" : "#a855f7",
-                border: `1px solid ${isHost ? "rgba(6, 182, 212, 0.4)" : "rgba(168, 85, 247, 0.4)"}`,
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
+                borderRadius: "var(--radius-full)",
+                background: engineRunning ? "rgba(16, 185, 129, 0.15)" : "rgba(244, 63, 94, 0.15)",
+                color: engineRunning ? "var(--accent-emerald)" : "var(--accent-rose)",
+                border: `1px solid ${engineRunning ? "rgba(16, 185, 129, 0.4)" : "rgba(244, 63, 94, 0.4)"}`,
               }}
             >
-              {isHost ? "ROLE: MAIN HOST (CONTROLLER)" : "ROLE: CLIENT SCREEN"}
+              <span
+                style={{
+                  width: "7px",
+                  height: "7px",
+                  borderRadius: "50%",
+                  background: engineRunning ? "var(--accent-emerald)" : "var(--accent-rose)",
+                }}
+              />
+              {engineRunning ? "MAIN HOST (RUNNING)" : "MAIN HOST (OFFLINE)"}
             </span>
           </div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "14px" }}>
-          {devices.map((d) => {
-            const isActive = d.id === activeDeviceId;
+        <div
+          style={{
+            marginTop: "16px",
+            paddingTop: "14px",
+            borderTop: "1px solid var(--border-subtle)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            flexWrap: "wrap",
+            gap: "10px",
+            fontSize: "12px",
+          }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", color: "var(--text-secondary)" }}>
+            <Shield size={14} color="#06b6d4" />
+            <span>Physical Mouse Source & Controller</span>
+          </div>
 
-            return (
-              <div
-                key={d.id}
+          <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" }}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: "4px",
+                color: "var(--accent-emerald)",
+                fontWeight: 600,
+                fontSize: "11px",
+                background: "rgba(16, 185, 129, 0.1)",
+                padding: "2px 8px",
+                borderRadius: "var(--radius-full)",
+                border: "1px solid rgba(16, 185, 129, 0.3)",
+              }}
+            >
+              🔐 Verified Host
+            </span>
+            {onNavigateToAdvancedNetwork && (
+              <button
+                onClick={onNavigateToAdvancedNetwork}
                 style={{
-                  background: "var(--bg-secondary)",
-                  border: `1px solid ${isActive ? "var(--accent-emerald)" : "var(--border-subtle)"}`,
-                  borderRadius: "var(--radius-md)",
-                  padding: "16px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "12px",
+                  background: "none",
+                  border: "none",
+                  color: "var(--accent-cyan)",
+                  cursor: "pointer",
+                  fontSize: "12px",
+                  padding: "0",
+                  textDecoration: "underline",
                 }}
               >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <div
-                      style={{
-                        padding: "8px",
-                        background: "var(--bg-card)",
-                        borderRadius: "var(--radius-sm)",
-                        border: "1px solid var(--border-subtle)",
-                      }}
-                    >
-                      <Laptop size={20} color={isActive ? "#10b981" : "#94a3b8"} />
-                    </div>
-                    <div>
-                      <div style={{ fontWeight: 700, fontSize: "14px" }}>{d.name}</div>
-                      <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                        {d.os} ({d.arch})
-                      </div>
-                    </div>
-                  </div>
-
-                  {isActive ? (
-                    <span className="device-badge badge-active">ACTIVE CURSOR</span>
-                  ) : (
-                    <span
-                      style={{
-                        fontSize: "11px",
-                        padding: "2px 8px",
-                        borderRadius: "var(--radius-sm)",
-                        background: d.is_connected ? "rgba(16, 185, 129, 0.1)" : "rgba(244, 63, 94, 0.1)",
-                        color: d.is_connected ? "var(--accent-emerald)" : "var(--accent-rose)",
-                        border: `1px solid ${d.is_connected ? "rgba(16, 185, 129, 0.3)" : "rgba(244, 63, 94, 0.3)"}`,
-                      }}
-                    >
-                      {d.is_connected ? "CONNECTED" : "OFFLINE"}
-                    </span>
-                  )}
-                </div>
-
-                {/* Specs and Latency */}
-                <div
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "repeat(2, 1fr)",
-                    gap: "8px",
-                    background: "var(--bg-card)",
-                    padding: "8px 12px",
-                    borderRadius: "var(--radius-sm)",
-                    fontSize: "11px",
-                    fontFamily: "var(--font-mono)",
-                  }}
-                >
-                  <div>
-                    <span style={{ color: "var(--text-muted)" }}>ENDPOINT: </span>
-                    <span>{d.ip_address}:{d.port}</span>
-                  </div>
-                  <div>
-                    <span style={{ color: "var(--text-muted)" }}>LATENCY: </span>
-                    <span style={{ color: "var(--accent-cyan)" }}>
-                      {d.is_local ? "0.0 ms" : `${d.latency_ms.toFixed(2)} ms`}
-                    </span>
-                  </div>
-                  <div>
-                    <span style={{ color: "var(--text-muted)" }}>SOURCE: </span>
-                    <span>{d.is_local ? (isHost ? "Physical Mouse (Host)" : "Client Screen") : (isHost ? "Client Screen" : "Host Controller")}</span>
-                  </div>
-                  <div>
-                    <span style={{ color: "var(--text-muted)" }}>CAPS: </span>
-                    <span>{d.capabilities.length} features</span>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div style={{ display: "flex", gap: "8px", marginTop: "auto" }}>
-                  {isHost ? (
-                    !isActive && (
-                      <button
-                        className="btn btn-sm btn-primary"
-                        onClick={() => onSwitchOwner(d.id)}
-                        style={{ flex: 1 }}
-                        title={d.is_local ? "Return mouse directly to Host screen" : `Jump physical mouse directly to ${d.name}`}
-                      >
-                        <Zap size={12} />
-                        Take Control
-                      </button>
-                    )
-                  ) : (
-                    <div style={{ flex: 1, fontSize: "11px", color: "var(--text-muted)", display: "flex", alignItems: "center", gap: "4px", padding: "4px 0" }}>
-                      <Shield size={12} />
-                      <span>{isActive ? "Host mouse is on this screen" : "Client Screen (Managed by Host)"}</span>
-                    </div>
-                  )}
-
-                  {!d.is_local && (
-                    <>
-                      {d.is_connected ? (
-                        <button
-                          className="btn btn-sm btn-outline"
-                          onClick={() => onDisconnectDevice(d.id)}
-                          title="Disconnect network stream"
-                        >
-                          <Unplug size={12} />
-                        </button>
-                      ) : (
-                        <button
-                          className="btn btn-sm btn-outline"
-                          onClick={() => onConnectDevice(d.id)}
-                          title="Reconnect"
-                        >
-                          Connect
-                        </button>
-                      )}
-
-                      <button
-                        className="btn btn-sm btn-outline"
-                        onClick={() => onUnpairDevice(d.id)}
-                        style={{ color: "var(--accent-rose)" }}
-                        title="Unpair and remove device"
-                      >
-                        Unpair
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            );
-          })}
+                Device Information →
+              </button>
+            )}
+          </div>
         </div>
       </div>
 
-      {/* Add Device by Direct IP / Tailscale */}
+      {/* ── 2. CONNECTED DEVICES SECTION ── */}
       <div className="card">
-        <div className="card-header">
+        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
           <div>
             <h2 className="card-title">
-              <Plus size={16} color="#06b6d4" />
-              Add Remote Device (IP / Tailscale)
+              <Laptop size={17} color="#10b981" />
+              Connected Devices ({connectedRemotes.length})
             </h2>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
-              Directly connect to another laptop across your local network or Tailscale mesh IP
+              Devices linked and participating in your shared cursor space
             </p>
           </div>
         </div>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (manualIp.trim()) {
-              onAddManualDevice(manualIp.trim(), parseInt(manualPort) || 48700, manualName.trim() || undefined);
-              setManualIp("");
-              setManualName("");
-            }
-          }}
-          style={{ display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "flex-end" }}
-        >
-          <div style={{ flex: "1 1 200px" }}>
-            <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>
-              IP Address / Host
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. 192.168.1.2 or 100.94.85.40"
-              value={manualIp}
-              onChange={(e) => setManualIp(e.target.value)}
-              className="input"
-              style={{
-                width: "100%",
-                background: "var(--bg-secondary)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-sm)",
-                padding: "8px 12px",
-                color: "var(--text-primary)",
-                fontFamily: "var(--font-mono)",
-                fontSize: "13px",
-              }}
-              required
-            />
+        {connectedRemotes.length === 0 ? (
+          <div
+            style={{
+              padding: "36px 20px",
+              textAlign: "center",
+              color: "var(--text-muted)",
+              background: "var(--bg-secondary)",
+              borderRadius: "var(--radius-sm)",
+              border: "1px dashed var(--border-subtle)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
+            <Laptop size={28} color="#64748b" />
+            <div style={{ fontWeight: 600, color: "var(--text-secondary)" }}>No other devices connected yet</div>
+            <div style={{ fontSize: "12px" }}>
+              FRIDAY devices detected on your Wi-Fi will appear in Discovered Devices below.
+            </div>
           </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))", gap: "16px" }}>
+            {connectedRemotes.map((d) => {
+              const isActive = d.id === activeDeviceId;
 
-          <div style={{ flex: "1 1 160px" }}>
-            <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>
-              Device Name (Optional)
-            </label>
-            <input
-              type="text"
-              placeholder="e.g. Lenovo Yoga"
-              value={manualName}
-              onChange={(e) => setManualName(e.target.value)}
-              className="input"
-              style={{
-                width: "100%",
-                background: "var(--bg-secondary)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-sm)",
-                padding: "8px 12px",
-                color: "var(--text-primary)",
-                fontSize: "13px",
-              }}
-            />
-          </div>
+              return (
+                <div
+                  key={d.id}
+                  style={{
+                    background: "var(--bg-secondary)",
+                    border: `1px solid ${isActive ? "var(--accent-emerald)" : "var(--border-subtle)"}`,
+                    borderRadius: "var(--radius-md)",
+                    padding: "18px",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "14px",
+                    transition: "border-color 0.2s ease, transform 0.15s ease",
+                  }}
+                >
+                  {/* Card Header: Friendly Name, Platform, Status */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+                      <div
+                        style={{
+                          padding: "10px",
+                          background: "var(--bg-card)",
+                          borderRadius: "var(--radius-sm)",
+                          border: "1px solid var(--border-subtle)",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                        }}
+                      >
+                        <Laptop size={22} color={isActive ? "#10b981" : "#94a3b8"} />
+                      </div>
+                      <div>
+                        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                          <span style={{ fontWeight: 700, fontSize: "15px", color: "var(--text-primary)" }}>{d.name}</span>
+                          <span
+                            style={{
+                              fontSize: "10px",
+                              fontWeight: 600,
+                              padding: "1px 6px",
+                              borderRadius: "var(--radius-full)",
+                              background: "rgba(16, 185, 129, 0.12)",
+                              color: "var(--accent-emerald)",
+                              border: "1px solid rgba(16, 185, 129, 0.3)",
+                              display: "inline-flex",
+                              alignItems: "center",
+                              gap: "3px",
+                            }}
+                            title="Authenticated and encrypted session (Noise Protocol)"
+                          >
+                            🔐 Trusted
+                          </span>
+                        </div>
+                        <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "1px" }}>
+                          {d.os} • {d.arch}
+                        </div>
+                      </div>
+                    </div>
 
-          <div style={{ width: "90px" }}>
-            <label style={{ display: "block", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "6px" }}>
-              Port
-            </label>
-            <input
-              type="number"
-              value={manualPort}
-              onChange={(e) => setManualPort(e.target.value)}
-              className="input"
-              style={{
-                width: "100%",
-                background: "var(--bg-secondary)",
-                border: "1px solid var(--border-subtle)",
-                borderRadius: "var(--radius-sm)",
-                padding: "8px 12px",
-                color: "var(--text-primary)",
-                fontFamily: "var(--font-mono)",
-                fontSize: "13px",
-              }}
-            />
-          </div>
+                    <div>
+                      {isActive ? (
+                        <span className="device-badge badge-active">ACTIVE CURSOR</span>
+                      ) : (
+                        renderConnectionStateBadge(d.connection_state, d.is_connected)
+                      )}
+                    </div>
+                  </div>
 
-          <div style={{ display: "flex", gap: "8px" }}>
-            <button type="submit" className="btn btn-outline" style={{ height: "38px" }}>
-              <Plus size={14} />
-              <span>Direct Connect</span>
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              style={{ height: "38px" }}
-              disabled={!manualIp.trim()}
-              onClick={() => {
-                if (!manualIp.trim()) return;
-                startPairingFlow({
-                  id: manualIp.trim(),
-                  name: manualName.trim() || `Node (${manualIp.trim()})`,
-                  ip_address: manualIp.trim(),
-                  port: parseInt(manualPort) || 48700,
-                  os: "Remote",
-                  arch: "x86_64",
-                  is_paired: false,
-                });
-              }}
-            >
-              <Shield size={14} />
-              <span>Pair with IP</span>
-            </button>
+                  {/* Capabilities & Latency Row (Clean & Consumer-friendly) */}
+                  <div
+                    style={{
+                      background: "var(--bg-card)",
+                      padding: "10px 14px",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--border-subtle)",
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      fontSize: "12px",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                      <span style={{ color: "var(--accent-emerald)", fontWeight: 500 }}>Mouse ✓</span>
+                      <span style={{ color: d.capabilities.includes("keyboard_injection") ? "var(--accent-emerald)" : "var(--text-muted)" }}>
+                        Keyboard {d.capabilities.includes("keyboard_injection") ? "✓" : "○"}
+                      </span>
+                      <span style={{ color: d.capabilities.includes("clipboard") ? "var(--accent-emerald)" : "var(--text-muted)" }}>
+                        Clipboard {d.capabilities.includes("clipboard") ? "✓" : "○"}
+                      </span>
+                    </div>
+
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px", color: "var(--accent-cyan)", fontFamily: "var(--font-mono)", fontSize: "12px" }}>
+                      <Zap size={12} />
+                      <span>{d.is_connected ? `${d.latency_ms > 0 ? d.latency_ms.toFixed(1) : "< 1.0"} ms` : "—"}</span>
+                    </div>
+                  </div>
+
+                  {/* Actions Row */}
+                  <div style={{ display: "flex", gap: "8px", marginTop: "auto" }}>
+                    {isHost && !isActive && (
+                      <button
+                        className="btn btn-sm btn-primary"
+                        onClick={() => onSwitchOwner(d.id)}
+                        style={{ flex: 1 }}
+                        title={`Move active mouse control directly to ${d.name}`}
+                      >
+                        <Zap size={12} />
+                        Take Control
+                      </button>
+                    )}
+
+                    {d.is_connected ? (
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => onDisconnectDevice(d.id)}
+                        title="Temporarily disconnect session"
+                        style={{ flex: isHost && !isActive ? "initial" : 1 }}
+                      >
+                        <Unplug size={13} />
+                        <span>Disconnect</span>
+                      </button>
+                    ) : (
+                      <button
+                        className="btn btn-sm btn-outline"
+                        onClick={() => onConnectDevice(d.id)}
+                        title="Reconnect authenticated session"
+                        style={{ flex: 1 }}
+                      >
+                        <Wifi size={13} />
+                        <span>Reconnect</span>
+                      </button>
+                    )}
+
+                    <button
+                      className="btn btn-sm btn-outline"
+                      onClick={() => onUnpairDevice(d.id)}
+                      style={{ color: "var(--accent-rose)" }}
+                      title="Forget device and revoke trust"
+                    >
+                      <Trash2 size={13} />
+                      <span>Forget</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </form>
+        )}
       </div>
 
-      {/* Discovered Nearby Devices Section */}
+      {/* ── 3. DISCOVERED NEARBY DEVICES SECTION ── */}
       <div className="card">
-        <div className="card-header">
+        <div className="card-header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
           <div>
             <h2 className="card-title">
               <Search size={16} color="#3b82f6" />
               Discovered Nearby Devices ({discovered.length})
             </h2>
             <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
-              Zero-configuration discovery listening on local subnet (mDNS / UDP broadcast)
+              Zero-configuration discovery listening on local network via mDNS (_friday._udp.local.)
             </p>
           </div>
 
@@ -492,18 +658,38 @@ export const Devices: React.FC<DevicesProps> = ({
         {discovered.length === 0 ? (
           <div
             style={{
-              padding: "32px",
+              padding: "36px 20px",
               textAlign: "center",
               color: "var(--text-muted)",
               background: "var(--bg-secondary)",
               borderRadius: "var(--radius-sm)",
               border: "1px dashed var(--border-subtle)",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "8px",
             }}
           >
-            No new devices detected on local Wi-Fi. Ensure FRIDAY is installed and running on peer machine.
+            <Search size={24} color="#64748b" />
+            <div style={{ fontWeight: 600, color: "var(--text-secondary)" }}>
+              No new devices detected on local Wi-Fi
+            </div>
+            <div style={{ fontSize: "12px" }}>
+              Make sure FRIDAY is open and running on your other computer connected to the same Wi-Fi.
+            </div>
+            {onNavigateToAdvancedNetwork && (
+              <button
+                className="btn btn-sm btn-outline"
+                style={{ marginTop: "8px", fontSize: "12px" }}
+                onClick={onNavigateToAdvancedNetwork}
+              >
+                <Globe size={13} />
+                <span>Can't find device? Use Direct IP in Advanced Network Settings →</span>
+              </button>
+            )}
           </div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "12px" }}>
             {discovered.map((disc) => (
               <div
                 key={disc.id}
@@ -511,18 +697,35 @@ export const Devices: React.FC<DevicesProps> = ({
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "space-between",
-                  padding: "12px 16px",
+                  padding: "14px 18px",
                   background: "var(--bg-secondary)",
-                  borderRadius: "var(--radius-sm)",
+                  borderRadius: "var(--radius-md)",
                   border: "1px solid var(--border-subtle)",
+                  transition: "border-color 0.15s ease",
                 }}
               >
                 <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-                  <Laptop size={18} color="#06b6d4" />
+                  <div
+                    style={{
+                      padding: "8px",
+                      background: "var(--bg-card)",
+                      borderRadius: "var(--radius-sm)",
+                      border: "1px solid var(--border-subtle)",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                    }}
+                  >
+                    <Laptop size={20} color="#06b6d4" />
+                  </div>
                   <div>
-                    <div style={{ fontWeight: 600, fontSize: "14px" }}>{disc.name}</div>
-                    <div style={{ fontSize: "12px", color: "var(--text-muted)" }}>
-                      {disc.os} ({disc.arch}) • {disc.ip_address}:{disc.port}
+                    <div style={{ fontWeight: 700, fontSize: "14px", color: "var(--text-primary)" }}>{disc.name}</div>
+                    <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "2px" }}>
+                      {disc.os} • {disc.arch}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "4px", fontSize: "11px", color: "var(--accent-emerald)", marginTop: "3px" }}>
+                      <span style={{ width: "5px", height: "5px", borderRadius: "50%", background: "var(--accent-emerald)" }} />
+                      <span>Nearby</span>
                     </div>
                   </div>
                 </div>
@@ -530,9 +733,10 @@ export const Devices: React.FC<DevicesProps> = ({
                 <button
                   className="btn btn-sm btn-primary"
                   onClick={() => startPairingFlow(disc)}
+                  style={{ padding: "8px 16px", fontWeight: 600 }}
                 >
                   <Shield size={13} />
-                  <span>Pair Node</span>
+                  <span>Pair</span>
                 </button>
               </div>
             ))}
@@ -540,29 +744,49 @@ export const Devices: React.FC<DevicesProps> = ({
         )}
       </div>
 
-      {/* Pairing Confirmation Modal */}
+      {/* ── 4. APPLE CONTINUITY-STYLE PAIRING MODAL ── */}
       {pairingModalDev && (
         <div className="modal-overlay" onClick={() => setPairingModalDev(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "14px" }}>
-              <Shield size={20} color="#06b6d4" />
-              <h3 style={{ fontSize: "16px", fontWeight: 700 }}>Pairing with {pairingModalDev.name}</h3>
+          <div
+            className="modal-content"
+            onClick={(e) => e.stopPropagation()}
+            style={{ maxWidth: "420px", textAlign: "center", padding: "28px 24px" }}
+          >
+            <div
+              style={{
+                width: "56px",
+                height: "56px",
+                borderRadius: "50%",
+                background: "rgba(6, 182, 212, 0.12)",
+                border: "1px solid rgba(6, 182, 212, 0.3)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                margin: "0 auto 16px auto",
+              }}
+            >
+              <Shield size={28} color="#06b6d4" />
             </div>
 
-            {/* PIN display */}
-            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "8px" }}>
-              Security PIN — this code will appear on <strong>{pairingModalDev.name}</strong> ({pairingModalDev.ip_address}).
-              Verify it matches before accepting there.
+            <h3 style={{ fontSize: "18px", fontWeight: 700, marginBottom: "8px" }}>
+              Pair with {pairingModalDev.name}
+            </h3>
+
+            <p style={{ fontSize: "13px", color: "var(--text-secondary)", marginBottom: "20px", lineHeight: 1.5 }}>
+              FRIDAY wants to connect to: <strong>{pairingModalDev.name}</strong>
+              <br />
+              Confirm this security code on the other device:
             </p>
 
+            {/* Human-verifiable 6-digit Code (e.g. 739 421) */}
             <div
               style={{
                 fontFamily: "var(--font-mono)",
-                fontSize: "32px",
+                fontSize: "36px",
                 fontWeight: 700,
-                letterSpacing: "8px",
+                letterSpacing: "6px",
                 textAlign: "center",
-                padding: "18px",
+                padding: "16px 20px",
                 background: "var(--bg-secondary)",
                 borderRadius: "var(--radius-md)",
                 border: `1px solid ${
@@ -578,87 +802,157 @@ export const Devices: React.FC<DevicesProps> = ({
                     : pairingResult === "rejected"
                     ? "#f43f5e"
                     : "var(--accent-cyan)",
-                marginBottom: "16px",
+                marginBottom: "20px",
                 transition: "border-color 0.3s, color 0.3s",
               }}
             >
-              {pairCode}
+              {formatPinWithSpace(pairCode)}
             </div>
 
-            {/* Status messages */}
+            {/* Status Messages */}
             {!isPairingLoading && !pairingResult && (
-              <p style={{ fontSize: "12px", color: "var(--text-muted)", textAlign: "center", marginBottom: "14px" }}>
-                Click <strong>Send Request</strong> — the remote machine will show a confirmation dialog.
+              <p style={{ fontSize: "12px", color: "var(--text-muted)", marginBottom: "20px" }}>
+                Click <strong>Pair</strong> to transmit the pairing request to {pairingModalDev.name}.
               </p>
             )}
+
             {isPairingLoading && (
-              <p style={{ fontSize: "13px", color: "#06b6d4", textAlign: "center", marginBottom: "14px" }}>
-                ⏳ Waiting for {pairingModalDev.name} to accept… (up to 30 seconds)
-              </p>
-            )}
-            {pairingResult === "accepted" && (
-              <p style={{ fontSize: "13px", color: "#10b981", textAlign: "center", marginBottom: "14px", fontWeight: 600 }}>
-                ✅ Paired successfully! Device added to your ring.
-              </p>
-            )}
-            {pairingResult === "rejected" && (
-              <div style={{
-                marginBottom: "14px",
-                background: "rgba(244,63,94,0.06)",
-                border: "1px solid rgba(244,63,94,0.25)",
-                borderRadius: "var(--radius-sm)",
-                padding: "12px 14px",
-              }}>
-                <p style={{ fontSize: "13px", color: "#f43f5e", fontWeight: 600, marginBottom: "6px" }}>
-                  ❌ {pairingError ? "Cannot reach device" : "Pairing rejected or timed out"}
+              <div style={{ marginBottom: "20px" }}>
+                <p style={{ fontSize: "13px", color: "#06b6d4", fontWeight: 500 }}>
+                  ⏳ Waiting for confirmation on {pairingModalDev.name}…
                 </p>
-                {pairingError ? (
-                  <pre style={{
-                    fontSize: "11px",
-                    color: "var(--text-secondary)",
-                    whiteSpace: "pre-wrap",
-                    fontFamily: "var(--font-mono)",
-                    margin: 0,
-                  }}>
-                    {pairingError}
-                  </pre>
-                ) : (
-                  <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
-                    The remote user declined or did not respond in time.
-                  </p>
-                )}
+                <p style={{ fontSize: "11px", color: "var(--text-muted)", marginTop: "4px" }}>
+                  Please click Accept on the other machine
+                </p>
               </div>
             )}
 
+            {pairingResult === "accepted" && (
+              <div style={{ marginBottom: "20px" }}>
+                <p style={{ fontSize: "14px", color: "#10b981", fontWeight: 700 }}>
+                  ✅ Successfully Paired!
+                </p>
+                <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginTop: "4px" }}>
+                  {pairingModalDev.name} added to your trusted devices.
+                </p>
+              </div>
+            )}
+
+            {pairingResult === "rejected" && (
+              <div
+                style={{
+                  marginBottom: "20px",
+                  background: "rgba(244, 63, 94, 0.08)",
+                  border: "1px solid rgba(244, 63, 94, 0.25)",
+                  borderRadius: "var(--radius-sm)",
+                  padding: "12px",
+                  textAlign: "left",
+                }}
+              >
+                <p style={{ fontSize: "13px", color: "#f43f5e", fontWeight: 600, marginBottom: "4px" }}>
+                  ❌ {pairingError ? "Connection Failed" : "Pairing Declined"}
+                </p>
+                <p style={{ fontSize: "12px", color: "var(--text-muted)", margin: 0 }}>
+                  {pairingError || "The remote user rejected the request or the connection timed out."}
+                </p>
+              </div>
+            )}
+
+            {/* Actions */}
             <div style={{ display: "flex", gap: "10px" }}>
               <button
                 className="btn btn-outline"
-                onClick={() => { setPairingModalDev(null); setPairingResult(null); setPairingError(null); }}
+                onClick={() => {
+                  setPairingModalDev(null);
+                  setPairingResult(null);
+                  setPairingError(null);
+                }}
                 style={{ flex: 1 }}
                 disabled={isPairingLoading}
               >
-                {pairingResult === "accepted" ? "Close" : "Cancel"}
+                {pairingResult === "accepted" ? "Done" : "Cancel"}
               </button>
+
               {!pairingResult && (
                 <button
                   className="btn btn-primary"
                   onClick={confirmPairing}
                   disabled={isPairingLoading}
-                  style={{ flex: 1 }}
+                  style={{ flex: 1.5, fontWeight: 600 }}
                 >
-                  {isPairingLoading ? "Checking…" : "Send Request"}
+                  {isPairingLoading ? "Connecting…" : "Pair"}
                 </button>
               )}
+
               {pairingResult === "rejected" && (
                 <button
                   className="btn btn-primary"
-                  onClick={() => { setPairingResult(null); setPairingError(null); confirmPairing(); }}
-                  style={{ flex: 1 }}
+                  onClick={() => {
+                    setPairingResult(null);
+                    setPairingError(null);
+                    confirmPairing();
+                  }}
+                  style={{ flex: 1.5 }}
                 >
                   Retry
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── 5. RENAME LOCAL MACHINE MODAL ── */}
+      {isRenameModalOpen && (
+        <div className="modal-overlay" onClick={() => setIsRenameModalOpen(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()} style={{ maxWidth: "380px" }}>
+            <h3 style={{ fontSize: "16px", fontWeight: 700, marginBottom: "8px" }}>
+              Rename This Device
+            </h3>
+            <p style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "16px" }}>
+              Choose a friendly name (e.g. "Yoga", "G50", "MacBook Pro") for how this device appears to others on your network.
+            </p>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSaveName();
+              }}
+            >
+              <input
+                type="text"
+                value={newNameInput}
+                onChange={(e) => setNewNameInput(e.target.value)}
+                placeholder="e.g. Yoga"
+                className="input"
+                style={{
+                  width: "100%",
+                  marginBottom: "16px",
+                  fontSize: "14px",
+                  padding: "10px 12px",
+                }}
+                autoFocus
+                maxLength={40}
+              />
+
+              <div style={{ display: "flex", gap: "10px", justifyContent: "flex-end" }}>
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => setIsRenameModalOpen(false)}
+                  disabled={isSavingName}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="btn btn-primary"
+                  disabled={!newNameInput.trim() || isSavingName}
+                >
+                  {isSavingName ? "Saving…" : "Save Name"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

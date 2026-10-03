@@ -23,6 +23,8 @@ export interface DeviceInfo {
   is_connected: boolean;
   latency_ms: number;
   capabilities: string[];
+  connection_state?: string;
+  trust_state?: string;
 }
 
 export interface DiscoveredDevice {
@@ -33,6 +35,35 @@ export interface DiscoveredDevice {
   ip_address: string;
   port: number;
   is_paired: boolean;
+  connection_state?: string;
+  version?: string;
+  capabilities?: string[];
+}
+
+export interface LocalDeviceDto {
+  device_id: string;
+  display_name: string;
+  hostname: string;
+  os: string;
+  arch: string;
+  version: string;
+  is_host: boolean;
+}
+
+export interface NetworkDiagnosticsDto {
+  local_ip: string;
+  remote_ip?: string;
+  port: number;
+  transport: string;
+  interface: string;
+  connection_id: string;
+  packets_sent: number;
+  packets_received: number;
+  rtt_ms: number;
+  packet_loss_pct: number;
+  reconnect_attempts: number;
+  discovery_status: string;
+  connection_state: string;
 }
 
 /** An incoming pairing request from a remote FRIDAY node */
