@@ -469,10 +469,28 @@ pub fn get_telemetry(state: State<'_, SharedAppState>) -> TelemetryDto {
 pub fn run_diagnostics(state: State<'_, SharedAppState>) -> DiagnosticReportDto {
     let app = state.lock().unwrap();
     let status = app.get_engine_status();
+    let active_name = app
+        .devices
+        .iter()
+        .find(|d| d.id == app.active_device_id)
+        .map(|d| d.name.clone())
+        .unwrap_or_else(|| app.active_device_id.clone());
+    let ring_names: Vec<String> = app
+        .topology
+        .ring
+        .iter()
+        .map(|id| {
+            app.devices
+                .iter()
+                .find(|d| d.id == *id)
+                .map(|d| d.name.clone())
+                .unwrap_or_else(|| id.clone())
+        })
+        .collect();
     run_system_diagnostics(
         &status.state,
-        &app.active_device_id,
-        &app.topology.ring,
+        &active_name,
+        &ring_names,
         app.telemetry.latency_ms,
         app.telemetry.packet_loss_pct,
     )

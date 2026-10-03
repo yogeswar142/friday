@@ -97,12 +97,13 @@ pub fn set_local_cursor_pos(x: i32, y: i32) {
     {
         IS_SELF_SETTING_CURSOR.store(true, Ordering::SeqCst);
         // SAFETY: SetCursorPos is safe with integer screen coordinates.
-        // We also fire a hardware-level zero-delta mouse_event tagged with FRIDAY_INJECTED_MAGIC.
-        // This wakes up DWM cursor rendering, breaks touch/tablet cursor suppression,
-        // and guarantees the cursor remains visible without distorting pixel-perfect coordinates.
+        // In Windows, SetCursorPos moves coordinates without unsuppressing a hidden pointer.
+        // Issuing a tiny 1-pixel relative jitter wakes up DWM pointer rendering and unhides
+        // the pointer after keyboard typing or touch suppression.
         unsafe {
             let _ = SetCursorPos(x, y);
-            mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, FRIDAY_INJECTED_MAGIC);
+            mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, FRIDAY_INJECTED_MAGIC);
+            mouse_event(MOUSEEVENTF_MOVE, -1, 0, 0, FRIDAY_INJECTED_MAGIC);
         }
         IS_SELF_SETTING_CURSOR.store(false, Ordering::SeqCst);
     }
@@ -119,11 +120,35 @@ pub fn set_local_cursor_pos(x: i32, y: i32) {
 pub fn inject_os_event(event: &InputEvent) {
     match event {
         InputEvent::Mouse(MouseEvent::MoveRel { dx, dy, .. }) => {
-            if let Some((cur_x, cur_y)) = get_local_cursor_pos() {
-                let (screen_w, screen_h) = get_screen_dimensions();
-                let new_x = (cur_x + *dx as i32).clamp(0, screen_w - 1);
-                let new_y = (cur_y + *dy as i32).clamp(0, screen_h - 1);
-                set_local_cursor_pos(new_x, new_y);
+            #[cfg(target_os = "windows")]
+            {
+                // On Windows, injecting through mouse_event with actual non-zero deltas
+                // wakes up DWM cursor rendering, clears typing pointer vanish, and produces
+                // native mouse motion while clamping to screen boundaries.
+                if *dx != 0 || *dy != 0 {
+                    unsafe {
+                        mouse_event(
+                            MOUSEEVENTF_MOVE,
+                            *dx as i32,
+                            *dy as i32,
+                            0,
+                            FRIDAY_INJECTED_MAGIC,
+                        );
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                if let Some((cur_x, cur_y)) = get_local_cursor_pos() {
+                    let (screen_w, screen_h) = get_screen_dimensions();
+                    let new_x = (cur_x + *dx as i32).clamp(0, screen_w - 1);
+                    let new_y = (cur_y + *dy as i32).clamp(0, screen_h - 1);
+                    set_local_cursor_pos(new_x, new_y);
+                }
+            }
+            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+            {
+                let _ = (dx, dy);
             }
         }
         InputEvent::Mouse(MouseEvent::MoveAbs { x_norm, y_norm, .. }) => {
@@ -811,9 +836,10 @@ fn run_input_receiver(shared_state: SharedAppState, stop_flag: Arc<AtomicBool>) 
             if is_client_active {
                 #[cfg(target_os = "windows")]
                 {
-                    // SAFETY: Pulse zero-delta mouse move to prevent Windows from auto-hiding the cursor during inactivity
+                    // SAFETY: Pulse 1-pixel micro-jitter to prevent Windows from auto-hiding or vanishing the cursor
                     unsafe {
-                        mouse_event(MOUSEEVENTF_MOVE, 0, 0, 0, FRIDAY_INJECTED_MAGIC);
+                        mouse_event(MOUSEEVENTF_MOVE, 1, 0, 0, FRIDAY_INJECTED_MAGIC);
+                        mouse_event(MOUSEEVENTF_MOVE, -1, 0, 0, FRIDAY_INJECTED_MAGIC);
                     }
                 }
             }
@@ -1025,6 +1051,11 @@ fn run_mouse_router(
 
     let mut dwell_start: Option<(Edge, Instant)> = None;
     let mut return_dwell_start: Option<(Edge, Instant)> = None;
+    let mut remote_entry_edge: Option<Edge> = None;
+    let mut remote_entry_time: Option<Instant> = None;
+    let mut remote_cleared_deadzone: bool = false;
+    let mut host_entry_edge: Option<Edge> = None;
+    let mut host_entry_time: Option<Instant> = None;
 
     // Remote virtual cursor position and screen dimensions
     let mut remote_x = 960.0f32;
@@ -1087,6 +1118,7 @@ fn run_mouse_router(
                     IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
                     HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
                     return_dwell_start = None;
+                    remote_entry_edge = None;
                 }
             }
         } else if IS_CONTROLLING_REMOTE.load(Ordering::Relaxed) && active_id == local_id {
@@ -1115,102 +1147,152 @@ fn run_mouse_router(
                 };
 
                 if let Some(hit_edge) = edge {
-                    // Check topology: which device is connected at this edge?
-                    let next_target = {
-                        let app = shared_state.lock().unwrap();
-                        app.topology
-                            .neighbor_at_edge(&local_id, hit_edge)
-                            .map(|s| s.to_string())
-                    };
+                    // Suppress immediate bounce back to remote if cursor just entered host from this edge
+                    let is_host_suppressed = host_entry_edge == Some(hit_edge)
+                        && host_entry_time
+                            .is_some_and(|t| t.elapsed() < Duration::from_millis(800));
 
-                    if let Some(target_id) = next_target {
-                        if let Some(target_dev) = connected_peers.iter().find(|d| d.id == target_id)
-                        {
-                            let now = Instant::now();
-                            let is_same = match dwell_start {
-                                Some((e, _)) => e == hit_edge,
-                                None => false,
-                            };
+                    if is_host_suppressed {
+                        dwell_start = None;
+                    } else {
+                        if host_entry_edge.is_some() && !is_host_suppressed {
+                            host_entry_edge = None;
+                        }
 
-                            if !is_same {
-                                dwell_start = Some((hit_edge, now));
-                                if let Ok(mut app) = shared_state.lock() {
-                                    app.add_log(
-                                        "INFO",
-                                        "friday_core::mouse",
-                                        &format!(
-                                            "Mouse dwelling on {:?} edge at ({}, {}) → handoff target: {} ({}ms dwell)",
-                                            hit_edge, cur_x, cur_y, target_dev.name, dwell_ms
-                                        ),
-                                    );
-                                }
-                            } else if let Some((_, start)) = dwell_start {
-                                if start.elapsed() >= Duration::from_millis(dwell_ms) {
-                                    // ── TRIGGER HANDOFF TO TARGET DEVICE ──
-                                    let norm_x = (cur_x as f32 / screen_w as f32).clamp(0.0, 1.0);
-                                    let norm_y = (cur_y as f32 / screen_h as f32).clamp(0.0, 1.0);
-                                    let entry_point = CircularTopology::calculate_entry_point(
-                                        hit_edge,
-                                        NormalizedPoint {
-                                            x: norm_x,
-                                            y: norm_y,
-                                        },
-                                    );
+                        // Check topology: which device is connected at this edge?
+                        let next_target = {
+                            let app = shared_state.lock().unwrap();
+                            app.topology
+                                .neighbor_at_edge(&local_id, hit_edge)
+                                .map(|s| s.to_string())
+                        };
 
-                                    info!(
-                                        "Edge {:?} handoff triggered! Transferring active ownership to {} ({})",
-                                        hit_edge, target_dev.name, target_dev.ip_address
-                                    );
+                        if let Some(target_id) = next_target {
+                            if let Some(target_dev) =
+                                connected_peers.iter().find(|d| d.id == target_id)
+                            {
+                                let now = Instant::now();
+                                let is_same = match dwell_start {
+                                    Some((e, _)) => e == hit_edge,
+                                    None => false,
+                                };
 
-                                    target_ip = target_dev.ip_address.clone();
-                                    target_port = target_dev.port;
-                                    current_target_device_id = target_dev.id.clone();
-                                    remote_x = entry_point.x * remote_w;
-                                    remote_y = entry_point.y * remote_h;
-
-                                    // Send HandoffControl over UDP
-                                    let handoff = ControlMessage::HandoffControl {
-                                        entry_x_norm: entry_point.x,
-                                        entry_y_norm: entry_point.y,
-                                    };
-                                    if let Ok(bytes) = handoff.encode() {
-                                        let packet = NetworkPacket::new_control(bytes);
-                                        if let Ok(enc) = packet.encode() {
-                                            let dest = format!("{}:{}", target_ip, target_port);
-                                            let _ = send_socket.send_to(&enc, &dest);
-                                        }
-                                    }
-
-                                    // Update state: active owner is now the remote device
+                                if !is_same {
+                                    dwell_start = Some((hit_edge, now));
                                     if let Ok(mut app) = shared_state.lock() {
-                                        app.active_device_id = current_target_device_id.clone();
-                                        app.topology.set_active_device(&current_target_device_id);
-                                        for d in &mut app.devices {
-                                            d.is_active = d.id == current_target_device_id;
-                                        }
                                         app.add_log(
                                             "INFO",
                                             "friday_core::mouse",
                                             &format!(
-                                                "Mouse crossed {:?} edge ({}, {})! Active ownership transferred to {} ({}) at entry ({:.3}, {:.3})",
-                                                hit_edge, cur_x, cur_y, target_dev.name, target_dev.ip_address, entry_point.x, entry_point.y
+                                                "Mouse dwelling on {:?} edge at ({}, {}) → handoff target: {} ({}ms dwell)",
+                                                hit_edge, cur_x, cur_y, target_dev.name, dwell_ms
                                             ),
                                         );
-                                        app.persist_config();
                                     }
+                                } else if let Some((_, start)) = dwell_start {
+                                    if start.elapsed() >= Duration::from_millis(dwell_ms) {
+                                        // ── TRIGGER HANDOFF TO TARGET DEVICE ──
+                                        let norm_x =
+                                            (cur_x as f32 / screen_w as f32).clamp(0.0, 1.0);
+                                        let norm_y =
+                                            (cur_y as f32 / screen_h as f32).clamp(0.0, 1.0);
+                                        let entry_point = CircularTopology::calculate_entry_point(
+                                            hit_edge,
+                                            NormalizedPoint {
+                                                x: norm_x,
+                                                y: norm_y,
+                                            },
+                                        );
 
-                                    FREEZE_CURSOR_X.store(cur_x, Ordering::Relaxed);
-                                    FREEZE_CURSOR_Y.store(cur_y, Ordering::Relaxed);
-                                    IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
-                                    HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
-                                    dwell_start = None;
+                                        info!(
+                                            "Edge {:?} handoff triggered! Transferring active ownership to {} ({})",
+                                            hit_edge, target_dev.name, target_dev.ip_address
+                                        );
+
+                                        target_ip = target_dev.ip_address.clone();
+                                        target_port = target_dev.port;
+                                        current_target_device_id = target_dev.id.clone();
+
+                                        // Calculate target entry edge and inward-offset entry position.
+                                        // This prevents landing directly on the return threshold and immediately triggering return dwell!
+                                        let entry_edge = match hit_edge {
+                                            Edge::Right => Edge::Left,
+                                            Edge::Left => Edge::Right,
+                                            Edge::Top => Edge::Bottom,
+                                            Edge::Bottom => Edge::Top,
+                                        };
+
+                                        let margin = (threshold as f32 + 24.0).max(28.0);
+                                        match entry_edge {
+                                            Edge::Left => {
+                                                remote_x = margin.min(remote_w - 1.0);
+                                                remote_y = entry_point.y * (remote_h - 1.0);
+                                            }
+                                            Edge::Right => {
+                                                remote_x = (remote_w - 1.0 - margin).max(0.0);
+                                                remote_y = entry_point.y * (remote_h - 1.0);
+                                            }
+                                            Edge::Top => {
+                                                remote_x = entry_point.x * (remote_w - 1.0);
+                                                remote_y = margin.min(remote_h - 1.0);
+                                            }
+                                            Edge::Bottom => {
+                                                remote_x = entry_point.x * (remote_w - 1.0);
+                                                remote_y = (remote_h - 1.0 - margin).max(0.0);
+                                            }
+                                        }
+
+                                        remote_entry_edge = Some(entry_edge);
+                                        remote_entry_time = Some(Instant::now());
+                                        remote_cleared_deadzone = false;
+
+                                        // Send HandoffControl over UDP with inward normalized coordinates so client OS cursor enters comfortably
+                                        let handoff = ControlMessage::HandoffControl {
+                                            entry_x_norm: (remote_x / (remote_w - 1.0).max(1.0))
+                                                .clamp(0.0, 1.0),
+                                            entry_y_norm: (remote_y / (remote_h - 1.0).max(1.0))
+                                                .clamp(0.0, 1.0),
+                                        };
+                                        if let Ok(bytes) = handoff.encode() {
+                                            let packet = NetworkPacket::new_control(bytes);
+                                            if let Ok(enc) = packet.encode() {
+                                                let dest = format!("{}:{}", target_ip, target_port);
+                                                let _ = send_socket.send_to(&enc, &dest);
+                                            }
+                                        }
+
+                                        // Update state: active owner is now the remote device
+                                        if let Ok(mut app) = shared_state.lock() {
+                                            app.active_device_id = current_target_device_id.clone();
+                                            app.topology
+                                                .set_active_device(&current_target_device_id);
+                                            for d in &mut app.devices {
+                                                d.is_active = d.id == current_target_device_id;
+                                            }
+                                            app.add_log(
+                                                "INFO",
+                                                "friday_core::mouse",
+                                                &format!(
+                                                    "Mouse crossed {:?} edge ({}, {})! Active ownership transferred to {} ({}) at entry ({:.3}, {:.3})",
+                                                    hit_edge, cur_x, cur_y, target_dev.name, target_dev.ip_address, entry_point.x, entry_point.y
+                                                ),
+                                            );
+                                            app.persist_config();
+                                        }
+
+                                        FREEZE_CURSOR_X.store(cur_x, Ordering::Relaxed);
+                                        FREEZE_CURSOR_Y.store(cur_y, Ordering::Relaxed);
+                                        IS_CONTROLLING_REMOTE.store(true, Ordering::SeqCst);
+                                        HAS_LAST_HOOK_PT.store(false, Ordering::SeqCst);
+                                        dwell_start = None;
+                                    }
                                 }
+                            } else {
+                                dwell_start = None;
                             }
                         } else {
                             dwell_start = None;
                         }
-                    } else {
-                        dwell_start = None;
                     }
                 } else {
                     dwell_start = None;
@@ -1234,6 +1316,24 @@ fn run_mouse_router(
                         move_log_count += 1;
                         move_log_dx += *dx as i32;
                         move_log_dy += *dy as i32;
+
+                        // Check if user has moved deeper into the screen, clearing entry deadzone
+                        if let Some(edge) = remote_entry_edge {
+                            let cleared = match edge {
+                                Edge::Left => remote_x > (threshold as f32 + 48.0),
+                                Edge::Right => {
+                                    remote_x < (remote_w - 1.0 - threshold as f32 - 48.0)
+                                }
+                                Edge::Top => remote_y > (threshold as f32 + 48.0),
+                                Edge::Bottom => {
+                                    remote_y < (remote_h - 1.0 - threshold as f32 - 48.0)
+                                }
+                            };
+                            if cleared {
+                                remote_cleared_deadzone = true;
+                                remote_entry_edge = None;
+                            }
+                        }
                     }
                     InputEvent::Mouse(MouseEvent::Button { button, state, .. }) => {
                         if let Ok(mut app) = shared_state.lock() {
@@ -1276,25 +1376,35 @@ fn run_mouse_router(
                 };
 
                 if let Some(hit_edge) = virtual_edge {
-                    // Query CircularTopology: which device connects at this edge of the active device?
-                    let next_target = {
-                        let app = shared_state.lock().unwrap();
-                        app.topology
-                            .neighbor_at_edge(&current_target_device_id, hit_edge)
-                            .map(|s| s.to_string())
-                    };
+                    // Suppress return dwell if this is the entry edge and the cursor hasn't cleared the deadzone yet,
+                    // or if less than 800ms has elapsed since entry.
+                    let is_suppressed = remote_entry_edge == Some(hit_edge)
+                        && (!remote_cleared_deadzone
+                            || remote_entry_time
+                                .is_some_and(|t| t.elapsed() < Duration::from_millis(800)));
 
-                    if let Some(next_id) = next_target {
-                        let now = Instant::now();
-                        let is_same = match return_dwell_start {
-                            Some((e, _)) => e == hit_edge,
-                            None => false,
+                    if is_suppressed {
+                        return_dwell_start = None;
+                    } else {
+                        // Query CircularTopology: which device connects at this edge of the active device?
+                        let next_target = {
+                            let app = shared_state.lock().unwrap();
+                            app.topology
+                                .neighbor_at_edge(&current_target_device_id, hit_edge)
+                                .map(|s| s.to_string())
                         };
 
-                        if !is_same {
-                            return_dwell_start = Some((hit_edge, now));
-                            if let Ok(mut app) = shared_state.lock() {
-                                app.add_log(
+                        if let Some(next_id) = next_target {
+                            let now = Instant::now();
+                            let is_same = match return_dwell_start {
+                                Some((e, _)) => e == hit_edge,
+                                None => false,
+                            };
+
+                            if !is_same {
+                                return_dwell_start = Some((hit_edge, now));
+                                if let Ok(mut app) = shared_state.lock() {
+                                    app.add_log(
                                     "INFO",
                                     "friday_core::mouse",
                                     &format!(
@@ -1302,105 +1412,28 @@ fn run_mouse_router(
                                         current_target_device_id, hit_edge, remote_x, remote_y, next_id
                                     ),
                                 );
-                            }
-                        } else if let Some((_, start)) = return_dwell_start {
-                            if start.elapsed() >= Duration::from_millis(dwell_ms) {
-                                let norm_x = (remote_x / remote_w).clamp(0.0, 1.0);
-                                let norm_y = (remote_y / remote_h).clamp(0.0, 1.0);
-                                let entry_point = CircularTopology::calculate_entry_point(
-                                    hit_edge,
-                                    NormalizedPoint {
-                                        x: norm_x,
-                                        y: norm_y,
-                                    },
-                                );
+                                }
+                            } else if let Some((_, start)) = return_dwell_start {
+                                if start.elapsed() >= Duration::from_millis(dwell_ms) {
+                                    let norm_x = (remote_x / remote_w).clamp(0.0, 1.0);
+                                    let norm_y = (remote_y / remote_h).clamp(0.0, 1.0);
+                                    let entry_point = CircularTopology::calculate_entry_point(
+                                        hit_edge,
+                                        NormalizedPoint {
+                                            x: norm_x,
+                                            y: norm_y,
+                                        },
+                                    );
 
-                                if next_id == local_id {
-                                    // ── CIRCULAR RETURN TO PHYSICAL MOUSE SOURCE (LOCAL MACHINE) ──
-                                    info!(
+                                    if next_id == local_id {
+                                        // ── CIRCULAR RETURN TO PHYSICAL MOUSE SOURCE (LOCAL MACHINE) ──
+                                        info!(
                                         "Circular routing: virtual cursor on {} crossed {:?} edge → returning ownership to Physical Mouse machine ({})",
                                         current_target_device_id, hit_edge, local_id
                                     );
 
-                                    // Release any held buttons on the remote device
-                                    if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
-                                        let packet = NetworkPacket::new_control(bytes);
-                                        if let Ok(enc) = packet.encode() {
-                                            let dest = format!("{}:{}", target_ip, target_port);
-                                            let _ = send_socket.send_to(&enc, &dest);
-                                        }
-                                    }
-
-                                    let local_entry_x =
-                                        ((entry_point.x * (screen_w - 1) as f32).round() as i32)
-                                            .clamp(0, screen_w - 1);
-                                    let local_entry_y =
-                                        ((entry_point.y * (screen_h - 1) as f32).round() as i32)
-                                            .clamp(0, screen_h - 1);
-
-                                    FREEZE_CURSOR_X.store(local_entry_x, Ordering::Relaxed);
-                                    FREEZE_CURSOR_Y.store(local_entry_y, Ordering::Relaxed);
-                                    IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
-
-                                    set_local_cursor_pos(local_entry_x, local_entry_y);
-
-                                    if let Ok(mut app) = shared_state.lock() {
-                                        let local_id_clone = app.local_device_id.clone();
-                                        app.active_device_id = local_id_clone.clone();
-                                        app.topology.set_active_device(&local_id_clone);
-                                        for d in &mut app.devices {
-                                            d.is_active = d.id == local_id_clone;
-                                        }
-                                        app.add_log(
-                                            "INFO",
-                                            "friday_core::mouse",
-                                            &format!(
-                                                "Virtual cursor crossed {:?} edge of {} → returned to Host ({}) at ({}, {})",
-                                                hit_edge, current_target_device_id, local_id_clone, local_entry_x, local_entry_y
-                                            ),
-                                        );
-                                        app.persist_config();
-                                    }
-
-                                    return_dwell_start = None;
-                                    break;
-                                } else {
-                                    // ── CIRCULAR FORWARDING TO NEXT REMOTE DEVICE IN RING (e.g. C in A → B → C) ──
-                                    info!(
-                                            "Circular routing: virtual cursor on {} crossed {:?} edge → transferring to next peer {}",
-                                            current_target_device_id, hit_edge, next_id
-                                        );
-
-                                    // Release inputs on previous peer
-                                    if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
-                                        let packet = NetworkPacket::new_control(bytes);
-                                        if let Ok(enc) = packet.encode() {
-                                            let dest = format!("{}:{}", target_ip, target_port);
-                                            let _ = send_socket.send_to(&enc, &dest);
-                                        }
-                                    }
-
-                                    let next_peer = {
-                                        let app = shared_state.lock().unwrap();
-                                        app.devices
-                                            .iter()
-                                            .find(|d| d.id == next_id && d.is_connected)
-                                            .cloned()
-                                    };
-
-                                    if let Some(next_dev) = next_peer {
-                                        target_ip = next_dev.ip_address.clone();
-                                        target_port = next_dev.port;
-                                        current_target_device_id = next_dev.id.clone();
-                                        remote_x = entry_point.x * remote_w;
-                                        remote_y = entry_point.y * remote_h;
-
-                                        // Send HandoffControl to new peer
-                                        let handoff = ControlMessage::HandoffControl {
-                                            entry_x_norm: entry_point.x,
-                                            entry_y_norm: entry_point.y,
-                                        };
-                                        if let Ok(bytes) = handoff.encode() {
+                                        // Release any held buttons on the remote device
+                                        if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
                                             let packet = NetworkPacket::new_control(bytes);
                                             if let Ok(enc) = packet.encode() {
                                                 let dest = format!("{}:{}", target_ip, target_port);
@@ -1408,14 +1441,155 @@ fn run_mouse_router(
                                             }
                                         }
 
+                                        let host_entry = match hit_edge {
+                                            Edge::Right => Edge::Left,
+                                            Edge::Left => Edge::Right,
+                                            Edge::Top => Edge::Bottom,
+                                            Edge::Bottom => Edge::Top,
+                                        };
+
+                                        let host_margin = (threshold + 24).max(28);
+                                        let (local_entry_x, local_entry_y) = match host_entry {
+                                            Edge::Left => (
+                                                host_margin.min(screen_w - 1),
+                                                ((entry_point.y * (screen_h - 1) as f32).round()
+                                                    as i32)
+                                                    .clamp(0, screen_w - 1),
+                                            ),
+                                            Edge::Right => (
+                                                (screen_w - 1 - host_margin).max(0),
+                                                ((entry_point.y * (screen_h - 1) as f32).round()
+                                                    as i32)
+                                                    .clamp(0, screen_w - 1),
+                                            ),
+                                            Edge::Top => (
+                                                ((entry_point.x * (screen_w - 1) as f32).round()
+                                                    as i32)
+                                                    .clamp(0, screen_w - 1),
+                                                host_margin.min(screen_h - 1),
+                                            ),
+                                            Edge::Bottom => (
+                                                ((entry_point.x * (screen_w - 1) as f32).round()
+                                                    as i32)
+                                                    .clamp(0, screen_w - 1),
+                                                (screen_h - 1 - host_margin).max(0),
+                                            ),
+                                        };
+
+                                        host_entry_edge = Some(host_entry);
+                                        host_entry_time = Some(Instant::now());
+
+                                        FREEZE_CURSOR_X.store(local_entry_x, Ordering::Relaxed);
+                                        FREEZE_CURSOR_Y.store(local_entry_y, Ordering::Relaxed);
+                                        IS_CONTROLLING_REMOTE.store(false, Ordering::SeqCst);
+
+                                        set_local_cursor_pos(local_entry_x, local_entry_y);
+
                                         if let Ok(mut app) = shared_state.lock() {
-                                            app.active_device_id = current_target_device_id.clone();
-                                            app.topology
-                                                .set_active_device(&current_target_device_id);
+                                            let local_id_clone = app.local_device_id.clone();
+                                            app.active_device_id = local_id_clone.clone();
+                                            app.topology.set_active_device(&local_id_clone);
                                             for d in &mut app.devices {
-                                                d.is_active = d.id == current_target_device_id;
+                                                d.is_active = d.id == local_id_clone;
                                             }
                                             app.add_log(
+                                            "INFO",
+                                            "friday_core::mouse",
+                                            &format!(
+                                                "Virtual cursor crossed {:?} edge of {} → returned to Host ({}) at ({}, {})",
+                                                hit_edge, current_target_device_id, local_id_clone, local_entry_x, local_entry_y
+                                            ),
+                                        );
+                                            app.persist_config();
+                                        }
+
+                                        return_dwell_start = None;
+                                        break;
+                                    } else {
+                                        // ── CIRCULAR FORWARDING TO NEXT REMOTE DEVICE IN RING (e.g. C in A → B → C) ──
+                                        info!(
+                                            "Circular routing: virtual cursor on {} crossed {:?} edge → transferring to next peer {}",
+                                            current_target_device_id, hit_edge, next_id
+                                        );
+
+                                        // Release inputs on previous peer
+                                        if let Ok(bytes) = ControlMessage::ReleaseAll.encode() {
+                                            let packet = NetworkPacket::new_control(bytes);
+                                            if let Ok(enc) = packet.encode() {
+                                                let dest = format!("{}:{}", target_ip, target_port);
+                                                let _ = send_socket.send_to(&enc, &dest);
+                                            }
+                                        }
+
+                                        let next_peer = {
+                                            let app = shared_state.lock().unwrap();
+                                            app.devices
+                                                .iter()
+                                                .find(|d| d.id == next_id && d.is_connected)
+                                                .cloned()
+                                        };
+
+                                        if let Some(next_dev) = next_peer {
+                                            target_ip = next_dev.ip_address.clone();
+                                            target_port = next_dev.port;
+                                            current_target_device_id = next_dev.id.clone();
+
+                                            let next_entry_edge = match hit_edge {
+                                                Edge::Right => Edge::Left,
+                                                Edge::Left => Edge::Right,
+                                                Edge::Top => Edge::Bottom,
+                                                Edge::Bottom => Edge::Top,
+                                            };
+                                            let margin = (threshold as f32 + 24.0).max(28.0);
+                                            match next_entry_edge {
+                                                Edge::Left => {
+                                                    remote_x = margin.min(remote_w - 1.0);
+                                                    remote_y = entry_point.y * (remote_h - 1.0);
+                                                }
+                                                Edge::Right => {
+                                                    remote_x = (remote_w - 1.0 - margin).max(0.0);
+                                                    remote_y = entry_point.y * (remote_h - 1.0);
+                                                }
+                                                Edge::Top => {
+                                                    remote_x = entry_point.x * (remote_w - 1.0);
+                                                    remote_y = margin.min(remote_h - 1.0);
+                                                }
+                                                Edge::Bottom => {
+                                                    remote_x = entry_point.x * (remote_w - 1.0);
+                                                    remote_y = (remote_h - 1.0 - margin).max(0.0);
+                                                }
+                                            }
+                                            remote_entry_edge = Some(next_entry_edge);
+                                            remote_entry_time = Some(Instant::now());
+                                            remote_cleared_deadzone = false;
+
+                                            // Send HandoffControl to new peer
+                                            let handoff = ControlMessage::HandoffControl {
+                                                entry_x_norm: (remote_x
+                                                    / (remote_w - 1.0).max(1.0))
+                                                .clamp(0.0, 1.0),
+                                                entry_y_norm: (remote_y
+                                                    / (remote_h - 1.0).max(1.0))
+                                                .clamp(0.0, 1.0),
+                                            };
+                                            if let Ok(bytes) = handoff.encode() {
+                                                let packet = NetworkPacket::new_control(bytes);
+                                                if let Ok(enc) = packet.encode() {
+                                                    let dest =
+                                                        format!("{}:{}", target_ip, target_port);
+                                                    let _ = send_socket.send_to(&enc, &dest);
+                                                }
+                                            }
+
+                                            if let Ok(mut app) = shared_state.lock() {
+                                                app.active_device_id =
+                                                    current_target_device_id.clone();
+                                                app.topology
+                                                    .set_active_device(&current_target_device_id);
+                                                for d in &mut app.devices {
+                                                    d.is_active = d.id == current_target_device_id;
+                                                }
+                                                app.add_log(
                                                     "INFO",
                                                     "friday_core::ownership",
                                                     &format!(
@@ -1423,16 +1597,17 @@ fn run_mouse_router(
                                                         next_dev.name
                                                     ),
                                                 );
-                                            app.persist_config();
+                                                app.persist_config();
+                                            }
                                         }
-                                    }
 
-                                    return_dwell_start = None;
+                                        return_dwell_start = None;
+                                    }
                                 }
                             }
+                        } else {
+                            return_dwell_start = None;
                         }
-                    } else {
-                        return_dwell_start = None;
                     }
                 } else {
                     return_dwell_start = None;

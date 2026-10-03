@@ -11,11 +11,12 @@ import {
   Trash2,
   Zap,
 } from "lucide-react";
-import { DeviceInfo, TopologyDto } from "../types";
+import { DeviceInfo, LocalDeviceDto, TopologyDto } from "../types";
 
 interface CircularTopologyEditorProps {
   topology: TopologyDto | null;
   devices: DeviceInfo[];
+  localDevice?: LocalDeviceDto | null;
   activeDeviceId: string;
   onUpdateRing: (newRing: string[]) => void;
   onSelectActiveOwner: (deviceId: string) => void;
@@ -24,6 +25,7 @@ interface CircularTopologyEditorProps {
 export const CircularTopologyEditor: React.FC<CircularTopologyEditorProps> = ({
   topology,
   devices,
+  localDevice,
   activeDeviceId,
   onUpdateRing,
   onSelectActiveOwner,
@@ -32,6 +34,13 @@ export const CircularTopologyEditor: React.FC<CircularTopologyEditorProps> = ({
   const [addDeviceModalOpen, setAddDeviceModalOpen] = useState(false);
 
   const ring = topology?.ring || [];
+
+  const getDeviceDisplayName = (id: string): string => {
+    const dev = devices.find((d) => d.id === id);
+    if (dev?.name) return dev.name;
+    if (localDevice && id === localDevice.device_id) return localDevice.display_name;
+    return id.length > 12 ? `${id.slice(0, 8)}...` : id;
+  };
 
   // Move node clockwise / right in ring
   const handleMoveRight = (index: number) => {
@@ -284,7 +293,7 @@ export const CircularTopologyEditor: React.FC<CircularTopologyEditorProps> = ({
             >
               <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                 <Laptop size={16} color={isActive ? "#10b981" : "#94a3b8"} />
-                <span style={{ fontWeight: 700, fontSize: "13px" }}>{node.id}</span>
+                <span style={{ fontWeight: 700, fontSize: "13px" }}>{getDeviceDisplayName(node.id)}</span>
               </div>
 
               <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>
@@ -361,9 +370,9 @@ export const CircularTopologyEditor: React.FC<CircularTopologyEditorProps> = ({
                     #{index + 1}
                   </span>
                   <div>
-                    <span style={{ fontWeight: 600, fontSize: "14px" }}>{nodeId}</span>
+                    <span style={{ fontWeight: 600, fontSize: "14px" }}>{getDeviceDisplayName(nodeId)}</span>
                     <span style={{ fontSize: "12px", color: "var(--text-muted)", marginLeft: "8px" }}>
-                      ({dev?.name || "Device"}) • {dev?.os} • {dev?.ip_address}
+                      {dev?.os || "Connected"} • {dev?.is_local ? "Main Host" : (dev?.connection_state || "Connected")}
                     </span>
                   </div>
                 </div>
@@ -430,8 +439,8 @@ export const CircularTopologyEditor: React.FC<CircularTopologyEditorProps> = ({
                   }}
                 >
                   <div>
-                    <div style={{ fontWeight: 600 }}>{dev.name} ({dev.id})</div>
-                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{dev.os} • {dev.ip_address}</div>
+                    <div style={{ fontWeight: 600 }}>{dev.name}</div>
+                    <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>{dev.os} • {dev.arch}</div>
                   </div>
                   <span className="btn btn-sm btn-primary">Add</span>
                 </div>

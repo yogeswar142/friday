@@ -253,7 +253,10 @@ export const Overview: React.FC<OverviewProps> = ({
                     whiteSpace: "nowrap",
                   }}
                 >
-                  ↺ wraps to {ring[0]}
+                  ↺ wraps to {(() => {
+                    const firstDev = devices.find((d) => d.id === ring[0]);
+                    return firstDev ? firstDev.name : (localDevice && ring[0] === localDevice.device_id ? localDevice.display_name : "Start");
+                  })()}
                 </div>
               </>
             )}

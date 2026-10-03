@@ -13,12 +13,14 @@ import {
   Laptop,
   Mouse,
 } from "lucide-react";
-import { EngineStatus, TabType } from "../types";
+import { DeviceInfo, EngineStatus, LocalDeviceDto, TabType } from "../types";
 
 interface NavbarProps {
   currentTab: TabType;
   onTabChange: (tab: TabType) => void;
   status: EngineStatus | null;
+  devices?: DeviceInfo[];
+  localDevice?: LocalDeviceDto | null;
   onToggleEngine: () => void;
   onPauseEngine: () => void;
   theme: "dark" | "light" | "system";
@@ -29,6 +31,8 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   onTabChange,
   status,
+  devices,
+  localDevice,
   onToggleEngine,
   onPauseEngine,
   theme,
@@ -36,6 +40,13 @@ export const Navbar: React.FC<NavbarProps> = ({
 }) => {
   const isRunning = status?.state === "running";
   const isPaused = status?.state === "paused";
+
+  const activeDev = devices?.find((d) => d.id === status?.active_device_id);
+  const activeDisplayName =
+    activeDev?.name ||
+    (localDevice && status?.active_device_id === localDevice.device_id
+      ? localDevice.display_name
+      : (status?.active_device_id ? "Active Device" : "None"));
 
   return (
     <header className="top-bar">
@@ -130,7 +141,7 @@ export const Navbar: React.FC<NavbarProps> = ({
               <span style={{ color: "var(--accent-emerald)", display: "flex", alignItems: "center", gap: "4px" }}>
                 <Laptop size={12} color="#10b981" />
                 <span>ACTIVE:</span>
-                <strong>{status.active_device_id}</strong>
+                <strong>{activeDisplayName}</strong>
               </span>
             </div>
           </>

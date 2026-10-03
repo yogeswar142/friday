@@ -293,6 +293,8 @@ export const App: React.FC = () => {
         currentTab={currentTab}
         onTabChange={setCurrentTab}
         status={status}
+        devices={devices}
+        localDevice={localDevice}
         onToggleEngine={handleToggleEngine}
         onPauseEngine={handlePauseEngine}
         theme={theme}
@@ -342,6 +344,7 @@ export const App: React.FC = () => {
           <CircularTopologyEditor
             topology={topology}
             devices={devices}
+            localDevice={localDevice}
             activeDeviceId={status?.active_device_id || ""}
             onUpdateRing={handleUpdateRing}
             onSelectActiveOwner={handleSwitchOwner}
